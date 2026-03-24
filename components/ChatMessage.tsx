@@ -2,7 +2,9 @@
 
 import { useState } from 'react'
 import DocumentCard from './DocumentCard'
+import ClientCard from './ClientCard'
 import type { Documento } from '@/lib/db'
+import type { AirtableCliente, AirtableExpediente } from '@/lib/airtable'
 
 export type SearchIntent = {
   cliente: string | null
@@ -15,8 +17,10 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   documents?: Documento[]
-  type?: 'text' | 'search' | 'error' | 'welcome'
+  type?: 'text' | 'search' | 'cliente' | 'error' | 'welcome'
   intent?: SearchIntent
+  cliente?: AirtableCliente
+  expedientes?: AirtableExpediente[]
 }
 
 // ─── Intent badges ────────────────────────────────────────────────────────────
@@ -243,7 +247,9 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
   }
 
   const isSearch = message.type === 'search'
+  const isCliente = message.type === 'cliente'
   const hasDocs = message.documents && message.documents.length > 0
+  const hasCliente = !!message.cliente
 
   return (
     <div className="flex justify-start">
@@ -259,10 +265,18 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
               <p className={`text-sm font-kumbh leading-relaxed ${message.type === 'error' ? 'text-red-600' : 'text-navy/90'}`}>
                 {message.content}
               </p>
-              {isSearch && message.intent && <IntentBadges intent={message.intent} />}
+              {(isSearch || isCliente) && message.intent && <IntentBadges intent={message.intent} />}
             </div>
           </div>
         </div>
+
+        {/* Client card (Airtable data) */}
+        {hasCliente && (
+          <ClientCard
+            cliente={message.cliente!}
+            expedientes={message.expedientes ?? []}
+          />
+        )}
 
         {/* Expediente panel (when docs found) */}
         {hasDocs && (
@@ -275,7 +289,7 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
         )}
 
         {/* Feedback when no docs */}
-        {isSearch && !hasDocs && (
+        {(isSearch || isCliente) && !hasDocs && (
           <div className="pl-1"><FeedbackButtons messageId={message.id} /></div>
         )}
       </div>

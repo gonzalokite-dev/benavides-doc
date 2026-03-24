@@ -13,28 +13,44 @@ export type SearchIntent = {
   palabras_clave: string[]
 }
 
+export type ConsultaCliente = {
+  tipo: 'consulta_cliente'
+  cliente: string
+  pregunta: string
+}
+
 export type NonDocumental = {
   tipo: 'no_documental'
   mensaje: string
 }
 
-export type ClaudeIntent = SearchIntent | NonDocumental
+export type ClaudeIntent = SearchIntent | ConsultaCliente | NonDocumental
 
-const EXTRACT_PROMPT = `Eres un extractor de datos para un buscador de documentos de asesoría fiscal en Benavides Asociados.
+const EXTRACT_PROMPT = `Eres un extractor de datos para Argos, el asistente de Benavides Asociados.
+Argos tiene acceso a documentos de SharePoint Y a la base de datos CRM de clientes (Airtable).
 
 Recibirás un mensaje del equipo. SIEMPRE responde con JSON puro, sin texto adicional.
 
-REGLA PRINCIPAL: Si el mensaje menciona cualquier cliente, modelo fiscal, documento o archivo → tipo "busqueda".
-Si piden "todos" los documentos de un cliente → tipo_documento: null y cliente relleno.
-Solo usa "no_documental" para saludos o preguntas sin relación con documentos.
+HAY 3 TIPOS DE RESPUESTA:
 
-Formato búsqueda:
-{"tipo":"busqueda","cliente":"nombre del cliente TAL COMO LO ESCRIBE EL USUARIO (no expandas abreviaturas ni añadas razón social) o null","cliente_nif":"NIF/NIE/CIF o null","tipo_documento":"tipo normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["termino1","termino2"]}
+1. BÚSQUEDA DE DOCUMENTOS — cuando piden archivos, contratos, modelos, escrituras, etc.
+{"tipo":"busqueda","cliente":"nombre TAL COMO LO ESCRIBE EL USUARIO o null","cliente_nif":"NIF/NIE/CIF o null","tipo_documento":"tipo normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["termino1"]}
 
-IMPORTANTE sobre el cliente: usa SIEMPRE el término exacto que escribió el usuario. Si dice "afama" → "afama". Si dice "garcia" → "garcia". Si dice "Sa Fonda" → "Sa Fonda". NO pongas "AFAMA S.L." si el usuario solo escribió "afama".
+2. CONSULTA DE CLIENTE — cuando preguntan por datos del CRM: servicios contratados, cuota, asesor, expedientes, contacto, estado comercial, información general del cliente.
+Ejemplos: "¿qué servicios tiene X?", "info de X", "ficha de X", "¿cuál es la cuota de X?", "expedientes de X", "datos de contacto de X", "¿quién lleva a X?"
+{"tipo":"consulta_cliente","cliente":"nombre del cliente","pregunta":"resumen breve de la pregunta"}
+
+3. NO DOCUMENTAL — solo para saludos o preguntas sin relación con documentos ni clientes.
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos o información de clientes."}
+
+REGLAS:
+- Si piden documentos → "busqueda"
+- Si preguntan por datos del cliente (no archivos) → "consulta_cliente"
+- Si piden "todo de X" o "expediente de X" → "busqueda" (incluye documentos)
+- IMPORTANTE: en "busqueda", el cliente es SIEMPRE el término exacto que escribió el usuario. Si dice "afama" → "afama". Si dice "garcia" → "garcia".
 
 Formato sin documentos:
-{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos de clientes."}
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos o información de clientes."}
 
 TIPOS DE DOCUMENTO — normaliza así:
 Modelos fiscales:
@@ -149,4 +165,35 @@ Sin markdown. Sin listas. Tono profesional y directo.`
   return response.content[0].type === 'text'
     ? response.content[0].text.trim()
     : `No encontré documentos para "${userMessage}". Prueba con el nombre completo del cliente o un término diferente.`
+}
+
+export async function generateClienteResponse(
+  pregunta: string,
+  clienteNombre: string,
+  clienteData: Record<string, unknown> | null,
+  expedientesData: Record<string, unknown>[]
+): Promise<string> {
+  if (!clienteData) {
+    return `No encontré a "${clienteNombre}" en la base de datos de clientes. Verifica el nombre o prueba con el NIF.`
+  }
+
+  const resumen = JSON.stringify({ cliente: clienteData, expedientes: expedientesData }, null, 2)
+
+  const prompt = `El equipo pregunta: "${pregunta}"
+
+Datos del cliente en el CRM:
+${resumen}
+
+Responde en español, de forma directa y concisa (máximo 3 frases). Usa los datos disponibles. Sin markdown. Sin listas. Solo texto fluido.`
+
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 200,
+    system: 'Eres Argos, el asistente de Benavides Asociados. Respondes preguntas sobre clientes usando datos del CRM. Sé directo y preciso.',
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  return response.content[0].type === 'text'
+    ? response.content[0].text.trim()
+    : `He encontrado la ficha de ${clienteNombre} en el sistema.`
 }

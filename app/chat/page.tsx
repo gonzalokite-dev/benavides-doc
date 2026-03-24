@@ -66,6 +66,8 @@ export default function ChatPage() {
           documents: data.documents as Documento[],
           type: data.type,
           intent: data.intent,
+          cliente: data.cliente,
+          expedientes: data.expedientes,
         }
 
         setMessages((prev) => [...prev, assistantMsg])
