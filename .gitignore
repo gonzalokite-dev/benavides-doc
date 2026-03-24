@@ -1,0 +1,31 @@
+# Dependencias
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Variables de entorno — NUNCA subir al repo
+.env
+.env.local
+.env.production
+.env*.local
+
+# Logs
+indexer.log
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
+.vercel
