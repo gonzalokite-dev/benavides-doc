@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 3: Search Supabase
+    // Step 3: Search documents
     const documents = await searchDocuments(intent)
 
     // Step 4: Generate natural response with Claude

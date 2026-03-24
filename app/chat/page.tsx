@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import Header from '@/components/Header'
 import ChatMessage, { type Message, TypingIndicator } from '@/components/ChatMessage'
 import ChatInput from '@/components/ChatInput'
-import type { Documento } from '@/lib/supabase'
+import type { Documento } from '@/lib/db'
 
 const WELCOME_MESSAGE: Message = {
   id: 'welcome',

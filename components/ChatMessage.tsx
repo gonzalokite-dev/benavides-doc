@@ -1,5 +1,5 @@
 import DocumentCard from './DocumentCard'
-import type { Documento } from '@/lib/supabase'
+import type { Documento } from '@/lib/db'
 
 export type Message = {
   id: string

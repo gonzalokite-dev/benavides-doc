@@ -1,4 +1,4 @@
-import type { Documento } from '@/lib/supabase'
+import type { Documento } from '@/lib/db'
 
 function getFileIcon(fileName: string) {
   const ext = fileName.split('.').pop()?.toLowerCase()

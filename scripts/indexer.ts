@@ -1,25 +1,25 @@
 /**
- * indexer.ts — Recorre la carpeta local de OneDrive y cataloga todos los archivos en Supabase
+ * indexer.ts — Recorre la carpeta local de OneDrive y cataloga los archivos en data/documentos.json
  *
  * Uso:
- *   npx tsx scripts/indexer.ts                          → indexa todo
- *   npx tsx scripts/indexer.ts --dry-run                → muestra qué haría sin escribir
- *   npx tsx scripts/indexer.ts --update                 → solo archivos nuevos (no duplica)
- *   npx tsx scripts/indexer.ts --path="/ruta/custom"    → carpeta alternativa
+ *   npx tsx scripts/indexer.ts                       → indexa todo (sobrescribe)
+ *   npx tsx scripts/indexer.ts --dry-run             → muestra qué haría sin escribir nada
+ *   npx tsx scripts/indexer.ts --update              → solo añade archivos nuevos
+ *   npx tsx scripts/indexer.ts --path="/ruta/custom" → carpeta alternativa
  */
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { createClient } from '@supabase/supabase-js'
+import { randomUUID } from 'crypto'
 import * as dotenv from 'dotenv'
+import type { Documento } from '../lib/db'
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') })
 dotenv.config({ path: path.join(process.cwd(), '.env') })
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const DB_PATH = path.join(process.cwd(), 'data', 'documentos.json')
 const SHAREPOINT_BASE_URL = (
   process.env.SHAREPOINT_BASE_URL ?? 'https://tuempresa.sharepoint.com/sites/BenavidesAsociados/Shared%20Documents/BENAVIDES%20ASOCIADOS%20-%20GENERAL'
 ).replace(/\/$/, '')
@@ -30,197 +30,142 @@ const INDEXABLE_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.msg', '.eml', '.txt',
 ])
 
-// Carpetas de nivel raíz a IGNORAR completamente
 const IGNORED_ROOT_FOLDERS = new Set([
   'Branding', 'PPT', 'Tarifas', 'VACACIONES', 'Bilky',
   'Arrendamiento de local', 'Germán', 'Gestoría', 'Inmobiliaria',
 ])
 
-// Archivos del sistema a ignorar
-const IGNORED_FILES = new Set([
-  'desktop.ini', 'thumbs.db', '.ds_store',
-])
+const IGNORED_FILES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
 
-// Carpetas mixtas que contienen tanto documentos de clientes como plantillas
 const MIXED_FOLDERS = new Set([
-  'Campaña de Renta', 'Certificados digitales', 'Informes Fiscales',
-  'IRPF', 'No Residentes',
+  'Campaña de Renta', 'Certificados digitales', 'Informes Fiscales', 'IRPF', 'No Residentes',
 ])
 
-// ─── Tipo de documento — patrones de nombre de archivo ───────────────────────
+// ─── Inferencia de tipo de documento ─────────────────────────────────────────
 
 const DOCUMENT_TYPE_PATTERNS: Array<{ pattern: RegExp; tipo: string }> = [
-  { pattern: /\b303\b/i, tipo: 'Modelo 303' },
-  { pattern: /\b390\b/i, tipo: 'Modelo 390' },
-  { pattern: /\b036\b/i, tipo: 'Modelo 036' },
-  { pattern: /\b037\b/i, tipo: 'Modelo 037' },
-  { pattern: /\b200\b/i, tipo: 'Modelo 200' },
-  { pattern: /\b111\b/i, tipo: 'Modelo 111' },
-  { pattern: /\b190\b/i, tipo: 'Modelo 190' },
-  { pattern: /\b347\b/i, tipo: 'Modelo 347' },
-  { pattern: /\b349\b/i, tipo: 'Modelo 349' },
-  { pattern: /\b115\b/i, tipo: 'Modelo 115' },
-  { pattern: /\b130\b/i, tipo: 'Modelo 130' },
-  { pattern: /\b720\b/i, tipo: 'Modelo 720' },
+  { pattern: /\b303\b/i,                               tipo: 'Modelo 303' },
+  { pattern: /\b390\b/i,                               tipo: 'Modelo 390' },
+  { pattern: /\b036\b/i,                               tipo: 'Modelo 036' },
+  { pattern: /\b037\b/i,                               tipo: 'Modelo 037' },
+  { pattern: /\b200\b/i,                               tipo: 'Modelo 200' },
+  { pattern: /\b111\b/i,                               tipo: 'Modelo 111' },
+  { pattern: /\b190\b/i,                               tipo: 'Modelo 190' },
+  { pattern: /\b347\b/i,                               tipo: 'Modelo 347' },
+  { pattern: /\b349\b/i,                               tipo: 'Modelo 349' },
+  { pattern: /\b115\b/i,                               tipo: 'Modelo 115' },
+  { pattern: /\b130\b/i,                               tipo: 'Modelo 130' },
+  { pattern: /\b720\b/i,                               tipo: 'Modelo 720' },
   { pattern: /contrato.{0,15}alquiler|arrendamiento/i, tipo: 'Contrato de alquiler' },
-  { pattern: /contrato.{0,15}compraventa|compraventa/i, tipo: 'Contrato de compraventa' },
-  { pattern: /contrato/i, tipo: 'Contrato' },
-  { pattern: /escritura.{0,15}constitu/i, tipo: 'Escritura de constitución' },
-  { pattern: /escritura.{0,15}propiedad/i, tipo: 'Escritura de propiedad' },
-  { pattern: /escritura/i, tipo: 'Escritura' },
-  { pattern: /\birpf\b|declaracion.{0,10}renta|renta_20\d\d/i, tipo: 'Declaración de la renta' },
-  { pattern: /sucesiones/i, tipo: 'Impuesto de Sucesiones' },
-  { pattern: /plusvalia/i, tipo: 'Plusvalía' },
-  { pattern: /\bibi\b/i, tipo: 'IBI (recibo)' },
-  { pattern: /licencia.{0,15}actividad|apertura/i, tipo: 'Licencia de actividad' },
-  { pattern: /certificado.{0,20}residencia/i, tipo: 'Certificado de residencia fiscal' },
-  { pattern: /certificado.{0,20}digital/i, tipo: 'Certificado digital' },
-  { pattern: /certificado/i, tipo: 'Certificado' },
-  { pattern: /poder.{0,15}notarial/i, tipo: 'Poder notarial' },
-  { pattern: /\bnie\b|\bnif\b|identificacion/i, tipo: 'NIE / NIF documento' },
-  { pattern: /nomina|nómina/i, tipo: 'Nómina' },
-  { pattern: /factura/i, tipo: 'Factura' },
-  { pattern: /vida.{0,10}laboral/i, tipo: 'Vida laboral' },
-  { pattern: /alta.{0,15}censal|baja.{0,15}censal/i, tipo: 'Modelo 036' },
-  { pattern: /sociedades|impuesto.{0,10}sociedades/i, tipo: 'Modelo 200' },
-  { pattern: /retencion|retenciones/i, tipo: 'Modelo 111' },
+  { pattern: /contrato.{0,15}compraventa|compraventa/i,tipo: 'Contrato de compraventa' },
+  { pattern: /contrato/i,                              tipo: 'Contrato' },
+  { pattern: /escritura.{0,15}constitu/i,              tipo: 'Escritura de constitución' },
+  { pattern: /escritura.{0,15}propiedad/i,             tipo: 'Escritura de propiedad' },
+  { pattern: /escritura/i,                             tipo: 'Escritura' },
+  { pattern: /irpf|declaracion.{0,10}renta|renta_20\d\d/i, tipo: 'Declaración de la renta' },
+  { pattern: /sucesiones/i,                            tipo: 'Impuesto de Sucesiones' },
+  { pattern: /plusvalia/i,                             tipo: 'Plusvalía' },
+  { pattern: /\bibi\b/i,                               tipo: 'IBI (recibo)' },
+  { pattern: /licencia.{0,15}actividad|apertura/i,     tipo: 'Licencia de actividad' },
+  { pattern: /certificado.{0,20}residencia/i,          tipo: 'Certificado de residencia fiscal' },
+  { pattern: /certificado.{0,20}digital/i,             tipo: 'Certificado digital' },
+  { pattern: /certificado/i,                           tipo: 'Certificado' },
+  { pattern: /poder.{0,15}notarial/i,                  tipo: 'Poder notarial' },
+  { pattern: /\bnie\b|\bnif\b|identificacion/i,        tipo: 'NIE / NIF documento' },
+  { pattern: /nomina|nómina/i,                         tipo: 'Nómina' },
+  { pattern: /factura/i,                               tipo: 'Factura' },
+  { pattern: /vida.{0,10}laboral/i,                    tipo: 'Vida laboral' },
+  { pattern: /sociedades|impuesto.{0,10}sociedades/i,  tipo: 'Modelo 200' },
+  { pattern: /retencion|retenciones/i,                 tipo: 'Modelo 111' },
 ]
 
-function inferTipoDocumento(fileName: string, folderPath: string): string {
-  const searchString = (fileName + ' ' + folderPath).toLowerCase()
-
+function inferTipo(fileName: string, relPath: string): string {
+  const s = (fileName + ' ' + relPath).toLowerCase()
   for (const { pattern, tipo } of DOCUMENT_TYPE_PATTERNS) {
-    if (pattern.test(searchString)) return tipo
+    if (pattern.test(s)) return tipo
   }
-
   return 'Otros'
 }
 
-function extractEjercicioFiscal(fileName: string): number | null {
-  const match = fileName.match(/\b(20\d{2})\b/)
-  return match ? parseInt(match[1], 10) : null
+function extractEjercicio(fileName: string): number | null {
+  const m = fileName.match(/\b(20\d{2})\b/)
+  return m ? parseInt(m[1], 10) : null
 }
 
-function buildSharePointUrl(relativePath: string): string {
-  // Encode each segment of the path separately
-  const encoded = relativePath
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/')
-  return `${SHAREPOINT_BASE_URL}/${encoded}`
+function buildUrl(relativePath: string): string {
+  return (
+    SHAREPOINT_BASE_URL +
+    '/' +
+    relativePath
+      .split('/')
+      .map((s) => encodeURIComponent(s))
+      .join('/')
+  )
 }
 
-function extractTags(fileName: string, cliente: string | null, tipoDoc: string, folderName: string): string[] {
+function extractTags(fileName: string, cliente: string | null, tipo: string, carpeta: string): string[] {
   const tags = new Set<string>()
-
-  // Add tipo doc words
-  tipoDoc
-    .toLowerCase()
-    .split(/\s+/)
-    .forEach((w) => w.length > 2 && tags.add(w))
-
-  // Add words from filename (remove extension, split by separators)
-  fileName
-    .replace(/\.[^.]+$/, '')
-    .split(/[-_\s.]+/)
-    .map((w) => w.toLowerCase())
-    .filter((w) => w.length > 2 && !/^\d{1,2}$/.test(w))
-    .forEach((w) => tags.add(w))
-
-  // Add folder name
-  folderName
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((w) => w.length > 2)
-    .forEach((w) => tags.add(w))
-
-  // Add client name parts
-  if (cliente) {
-    cliente
-      .toLowerCase()
-      .split(/[\s,]+/)
-      .filter((w) => w.length > 2)
-      .forEach((w) => tags.add(w))
-  }
-
+  const add = (str: string) =>
+    str.toLowerCase().split(/[-_\s.,/]+/).filter((w) => w.length > 2).forEach((w) => tags.add(w))
+  add(tipo)
+  add(fileName.replace(/\.[^.]+$/, ''))
+  add(carpeta)
+  if (cliente) add(cliente)
   return Array.from(tags).slice(0, 20)
 }
 
-// ─── File walker ─────────────────────────────────────────────────────────────
+// ─── Walker ───────────────────────────────────────────────────────────────────
 
-interface FileRecord {
-  cliente: string | null
-  cliente_nif: string | null
-  tipo_documento: string
-  nombre_archivo: string
-  descripcion: string | null
-  fecha_documento: string | null
-  ejercicio_fiscal: number | null
-  enlace_descarga: string
-  carpeta_origen: string
-  ruta_relativa: string
-  etiquetas: string[]
-}
+type RawRecord = Omit<Documento, 'id' | 'created_at' | 'updated_at'>
 
-function walkDirectory(
+function walk(
   dirPath: string,
   rootPath: string,
   carpetaOrigen: string,
   cliente: string | null,
-  records: FileRecord[]
-): void {
+  out: RawRecord[]
+) {
   let entries: fs.Dirent[]
-
   try {
     entries = fs.readdirSync(dirPath, { withFileTypes: true })
-  } catch (err) {
+  } catch {
     console.warn(`  ⚠️  No se puede leer: ${dirPath}`)
     return
   }
 
   for (const entry of entries) {
-    const fullPath = path.join(dirPath, entry.name)
-    const nameLower = entry.name.toLowerCase()
+    if (IGNORED_FILES.has(entry.name.toLowerCase()) || entry.name.startsWith('.')) continue
 
-    if (IGNORED_FILES.has(nameLower) || entry.name.startsWith('.')) continue
+    const fullPath = path.join(dirPath, entry.name)
 
     if (entry.isDirectory()) {
-      // If we're in /Clientes/, each subdirectory is a client
-      if (carpetaOrigen === 'Clientes' && cliente === null) {
-        walkDirectory(fullPath, rootPath, carpetaOrigen, entry.name, records)
-      } else {
-        // Recurse into subdirectory, keeping same client context
-        walkDirectory(fullPath, rootPath, carpetaOrigen, cliente, records)
-      }
+      const nextCliente = carpetaOrigen === 'Clientes' && cliente === null ? entry.name : cliente
+      walk(fullPath, rootPath, carpetaOrigen, nextCliente, out)
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name).toLowerCase()
       if (!INDEXABLE_EXTENSIONS.has(ext)) continue
 
       const relativePath = path.relative(rootPath, fullPath).replace(/\\/g, '/')
-      const tipoDoc = inferTipoDocumento(entry.name, relativePath)
-      const ejercicio = extractEjercicioFiscal(entry.name)
+      const tipo = inferTipo(entry.name, relativePath)
+      const ejercicio = extractEjercicio(entry.name)
 
-      // Get file modified date
       let fechaDocumento: string | null = null
       try {
-        const stat = fs.statSync(fullPath)
-        fechaDocumento = stat.mtime.toISOString().split('T')[0]
-      } catch {
-        // ignore
-      }
+        fechaDocumento = fs.statSync(fullPath).mtime.toISOString().split('T')[0]
+      } catch { /* ignore */ }
 
-      records.push({
-        cliente: cliente,
+      out.push({
+        cliente,
         cliente_nif: null,
-        tipo_documento: tipoDoc,
+        tipo_documento: tipo,
         nombre_archivo: entry.name,
         descripcion: null,
         fecha_documento: fechaDocumento,
         ejercicio_fiscal: ejercicio,
-        enlace_descarga: buildSharePointUrl(relativePath),
+        enlace_descarga: buildUrl(relativePath),
         carpeta_origen: carpetaOrigen,
         ruta_relativa: relativePath,
-        etiquetas: extractTags(entry.name, cliente, tipoDoc, carpetaOrigen),
+        etiquetas: extractTags(entry.name, cliente, tipo, carpetaOrigen),
       })
     }
   }
@@ -228,18 +173,15 @@ function walkDirectory(
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-async function main() {
+function main() {
   const args = process.argv.slice(2)
   const isDryRun = args.includes('--dry-run')
   const isUpdate = args.includes('--update')
   const pathArg = args.find((a) => a.startsWith('--path='))?.split('=')[1]
-
   const docsPath = pathArg ?? DEFAULT_DOCS_PATH
 
   if (!docsPath) {
-    console.error('❌ Debes especificar la ruta de la carpeta local.')
-    console.error('   Opción 1: Configura LOCAL_DOCS_PATH en .env.local')
-    console.error('   Opción 2: Usa --path="C:/ruta/a/carpeta"')
+    console.error('❌ Especifica la ruta con LOCAL_DOCS_PATH en .env.local o --path="..."')
     process.exit(1)
   }
 
@@ -251,153 +193,85 @@ async function main() {
   }
 
   console.log(`📁 Indexando: ${resolvedPath}`)
-  console.log(`🔗 SharePoint base: ${SHAREPOINT_BASE_URL}`)
-  if (isDryRun) console.log('🔍 Modo dry-run — no se escribirá en Supabase\n')
+  if (isDryRun) console.log('🔍 Modo dry-run — no se escribirá nada\n')
   if (isUpdate) console.log('🔄 Modo update — solo archivos nuevos\n')
 
-  // ── Scan filesystem ─────────────────────────────────────────────────────
+  // ── Scan ────────────────────────────────────────────────────────────────
 
-  const records: FileRecord[] = []
-  let ignoredFolders = 0
+  const records: RawRecord[] = []
 
-  let topLevel: fs.Dirent[]
-  try {
-    topLevel = fs.readdirSync(resolvedPath, { withFileTypes: true })
-  } catch (err) {
-    console.error(`❌ No se puede leer la carpeta raíz: ${err}`)
-    process.exit(1)
-  }
-
-  for (const entry of topLevel) {
+  for (const entry of fs.readdirSync(resolvedPath, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     if (IGNORED_ROOT_FOLDERS.has(entry.name)) {
-      console.log(`  ⏭️  Ignorando carpeta: ${entry.name}`)
-      ignoredFolders++
+      console.log(`  ⏭️  Ignorando: ${entry.name}`)
       continue
     }
-
     const subPath = path.join(resolvedPath, entry.name)
+    const carpeta = entry.name === 'Clientes' ? 'Clientes'
+      : MIXED_FOLDERS.has(entry.name) ? entry.name
+      : entry.name
 
-    if (entry.name === 'Clientes') {
-      console.log(`  📂 Procesando /Clientes/ (fuente principal)...`)
-      walkDirectory(subPath, resolvedPath, 'Clientes', null, records)
-    } else if (MIXED_FOLDERS.has(entry.name)) {
-      console.log(`  📂 Procesando /${entry.name}/ (carpeta mixta)...`)
-      walkDirectory(subPath, resolvedPath, entry.name, null, records)
-    } else {
-      // Other folders — index with folder name as context
-      console.log(`  📂 Procesando /${entry.name}/...`)
-      walkDirectory(subPath, resolvedPath, entry.name, null, records)
-    }
+    console.log(`  📂 ${entry.name}...`)
+    walk(subPath, resolvedPath, carpeta, entry.name === 'Clientes' ? null : null, records)
   }
 
   console.log(`\n📊 Archivos encontrados: ${records.length}`)
 
   if (isDryRun) {
-    console.log('\n📋 Vista previa (primeros 20 registros):')
-    records.slice(0, 20).forEach((r, i) => {
-      console.log(`  ${i + 1}. [${r.carpeta_origen}] ${r.cliente ?? 'sin cliente'} — ${r.nombre_archivo} (${r.tipo_documento})`)
-    })
-    console.log('\n✅ Dry-run completado. Nada fue escrito en Supabase.')
+    console.log('\n📋 Vista previa (primeros 20):')
+    records.slice(0, 20).forEach((r, i) =>
+      console.log(`  ${i + 1}. [${r.carpeta_origen}] ${r.cliente ?? '-'} — ${r.nombre_archivo} (${r.tipo_documento})`)
+    )
+    console.log('\n✅ Dry-run completado. Nada fue escrito.')
     return
   }
 
-  // ── Write to Supabase ────────────────────────────────────────────────────
+  // ── Write JSON ───────────────────────────────────────────────────────────
 
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.error('\n❌ Faltan variables de entorno para Supabase:')
-    console.error('   NEXT_PUBLIC_SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY')
-    process.exit(1)
+  const now = new Date().toISOString()
+
+  // Read existing if update mode
+  let existing: Documento[] = []
+  if (isUpdate && fs.existsSync(DB_PATH)) {
+    try { existing = JSON.parse(fs.readFileSync(DB_PATH, 'utf-8')) } catch { existing = [] }
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+  const existingKeys = new Set(
+    existing.map((d) => `${d.nombre_archivo}|${d.cliente ?? ''}|${d.carpeta_origen ?? ''}`)
+  )
 
   let inserted = 0
-  let updated = 0
   let skipped = 0
-  let errors = 0
 
-  // Fetch existing records if in update mode
-  let existingKeys = new Set<string>()
-  if (isUpdate) {
-    console.log('\n🔍 Consultando registros existentes...')
-    const { data } = await supabase
-      .from('documentos')
-      .select('nombre_archivo, cliente, carpeta_origen')
-    if (data) {
-      existingKeys = new Set(
-        data.map((r: { nombre_archivo: string; cliente: string; carpeta_origen: string }) =>
-          `${r.nombre_archivo}|${r.cliente ?? ''}|${r.carpeta_origen ?? ''}`
-        )
-      )
-      console.log(`   ${existingKeys.size} registros ya indexados.`)
+  for (const r of records) {
+    const key = `${r.nombre_archivo}|${r.cliente ?? ''}|${r.carpeta_origen ?? ''}`
+    if (isUpdate && existingKeys.has(key)) {
+      skipped++
+      continue
     }
+    existing.push({ ...r, id: randomUUID(), created_at: now, updated_at: now })
+    inserted++
   }
 
-  console.log('\n💾 Guardando en Supabase...')
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
+  fs.writeFileSync(DB_PATH, JSON.stringify(existing, null, 2), 'utf-8')
 
-  // Process in batches of 50
-  const BATCH_SIZE = 50
-  for (let i = 0; i < records.length; i += BATCH_SIZE) {
-    const batch = records.slice(i, i + BATCH_SIZE)
-
-    if (isUpdate) {
-      const newBatch = batch.filter((r) => {
-        const key = `${r.nombre_archivo}|${r.cliente ?? ''}|${r.carpeta_origen ?? ''}`
-        return !existingKeys.has(key)
-      })
-      skipped += batch.length - newBatch.length
-      if (newBatch.length === 0) continue
-
-      const { error } = await supabase.from('documentos').insert(
-        newBatch.map((r) => ({ ...r, updated_at: new Date().toISOString() }))
-      )
-      if (error) {
-        console.error(`  ❌ Error batch ${i}-${i + BATCH_SIZE}:`, error.message)
-        errors += newBatch.length
-      } else {
-        inserted += newBatch.length
-        process.stdout.write(`\r   Procesados: ${i + batch.length}/${records.length}`)
-      }
-    } else {
-      const { error } = await supabase.from('documentos').upsert(
-        batch.map((r) => ({ ...r, updated_at: new Date().toISOString() })),
-        { onConflict: 'nombre_archivo,cliente,carpeta_origen' }
-      )
-      if (error) {
-        console.error(`  ❌ Error batch ${i}-${i + BATCH_SIZE}:`, error.message)
-        errors += batch.length
-      } else {
-        inserted += batch.length
-        process.stdout.write(`\r   Procesados: ${i + batch.length}/${records.length}`)
-      }
-    }
-  }
-
-  console.log('\n')
-  console.log('📊 Resumen final:')
-  console.log(`   ✅ Insertados/actualizados: ${inserted}`)
-  if (isUpdate) console.log(`   ⏭️  Omitidos (ya existían): ${skipped}`)
-  console.log(`   ❌ Errores: ${errors}`)
-  console.log(`   🚫 Carpetas ignoradas: ${ignoredFolders}`)
-
-  // Write log file
-  const logPath = path.join(process.cwd(), 'indexer.log')
-  const logContent = [
-    `Indexación: ${new Date().toISOString()}`,
+  // Log
+  const logLines = [
+    `Indexación: ${now}`,
     `Carpeta: ${resolvedPath}`,
-    `Archivos encontrados: ${records.length}`,
-    `Insertados: ${inserted} | Omitidos: ${skipped} | Errores: ${errors}`,
+    `Archivos encontrados: ${records.length} | Insertados: ${inserted} | Omitidos: ${skipped}`,
     '',
     ...records.map((r) => `${r.carpeta_origen} | ${r.cliente ?? '-'} | ${r.nombre_archivo} | ${r.tipo_documento}`),
-  ].join('\n')
+  ]
+  fs.writeFileSync(path.join(process.cwd(), 'indexer.log'), logLines.join('\n'), 'utf-8')
 
-  fs.writeFileSync(logPath, logContent, 'utf-8')
-  console.log(`\n📝 Log guardado en: ${logPath}`)
-  console.log('\n🎉 Indexación completada.')
+  console.log(`\n📊 Resumen:`)
+  console.log(`   ✅ Insertados: ${inserted}`)
+  if (isUpdate) console.log(`   ⏭️  Omitidos (ya existían): ${skipped}`)
+  console.log(`   📄 Total en BD: ${existing.length}`)
+  console.log(`   📝 Log: indexer.log`)
+  console.log('\n🎉 Indexación completada. Haz git push para actualizar Vercel.')
 }
 
-main().catch((err) => {
-  console.error('❌ Error fatal:', err)
-  process.exit(1)
-})
+main()

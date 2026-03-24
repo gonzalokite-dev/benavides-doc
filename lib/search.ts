@@ -1,112 +1,92 @@
-import { supabaseAdmin, type Documento } from './supabase'
+import { readDocuments, type Documento } from './db'
 import type { SearchIntent } from './claude'
 
-export async function searchDocuments(intent: SearchIntent): Promise<Documento[]> {
-  // Strategy 1: Full search with all available filters
-  let results = await runQuery(intent, { strict: true })
+export function searchDocuments(intent: SearchIntent): Documento[] {
+  const all = readDocuments()
 
+  // Strategy 1: full match with all available filters
+  let results = filter(all, intent, true)
   if (results.length > 0) return results
 
-  // Strategy 2: Relax — search only by client
+  // Strategy 2: only by client
   if (intent.cliente) {
-    results = await runQuery({ ...intent, tipo_documento: null, ejercicio_fiscal: null }, { strict: false })
+    results = filter(all, { ...intent, tipo_documento: null, ejercicio_fiscal: null }, false)
     if (results.length > 0) return results
   }
 
-  // Strategy 3: Relax — search only by document type
+  // Strategy 3: only by document type
   if (intent.tipo_documento) {
-    results = await runQuery({ ...intent, cliente: null, cliente_nif: null, ejercicio_fiscal: null }, { strict: false })
+    results = filter(all, { ...intent, cliente: null, cliente_nif: null, ejercicio_fiscal: null }, false)
     if (results.length > 0) return results
   }
 
-  // Strategy 4: Keyword search across multiple fields
+  // Strategy 4: keyword search across all text fields
   if (intent.palabras_clave.length > 0) {
-    results = await keywordSearch(intent.palabras_clave)
+    results = keywordSearch(all, intent.palabras_clave)
   }
 
   return results
 }
 
-async function runQuery(
-  intent: SearchIntent,
-  options: { strict: boolean }
-): Promise<Documento[]> {
-  let query = supabaseAdmin
-    .from('documentos')
-    .select('*')
-    .order('fecha_documento', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false })
-    .limit(10)
-
-  // Filter by NIF (exact match)
-  if (intent.cliente_nif) {
-    query = query.ilike('cliente_nif', intent.cliente_nif)
-  }
-
-  // Filter by client name (partial, case-insensitive)
-  if (intent.cliente) {
-    const clientTerm = normalizeSearchTerm(intent.cliente)
-    query = query.ilike('cliente', `%${clientTerm}%`)
-  }
-
-  // Filter by document type (partial match)
-  if (intent.tipo_documento) {
-    const tipoNormalized = normalizeTipoDocumento(intent.tipo_documento)
-    query = query.ilike('tipo_documento', `%${tipoNormalized}%`)
-  }
-
-  // Filter by fiscal year (exact)
-  if (intent.ejercicio_fiscal) {
-    query = query.eq('ejercicio_fiscal', intent.ejercicio_fiscal)
-  }
-
-  const { data, error } = await query
-
-  if (error) {
-    console.error('Supabase query error:', error)
-    return []
-  }
-
-  return (data as Documento[]) ?? []
-}
-
-async function keywordSearch(keywords: string[]): Promise<Documento[]> {
-  // Search across cliente, tipo_documento, nombre_archivo, descripcion, etiquetas
-  const term = keywords.slice(0, 3).join(' ')
-
-  const { data, error } = await supabaseAdmin
-    .from('documentos')
-    .select('*')
-    .or(
-      [
-        `cliente.ilike.%${term}%`,
-        `tipo_documento.ilike.%${term}%`,
-        `nombre_archivo.ilike.%${term}%`,
-        `descripcion.ilike.%${term}%`,
-      ].join(',')
-    )
-    .order('fecha_documento', { ascending: false, nullsFirst: false })
-    .limit(10)
-
-  if (error) {
-    console.error('Keyword search error:', error)
-    return []
-  }
-
-  return (data as Documento[]) ?? []
-}
-
-function normalizeSearchTerm(term: string): string {
-  return term
+function normalize(str: string): string {
+  return str
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '') // strip accents for broader matching
-    .trim()
+    .replace(/[\u0300-\u036f]/g, '')
 }
 
-function normalizeTipoDocumento(tipo: string): string {
-  // Extract just the number or key word for flexible matching
-  const modeloMatch = tipo.match(/\d{3}/)
-  if (modeloMatch) return modeloMatch[0]
-  return normalizeSearchTerm(tipo)
+function contains(haystack: string | null | undefined, needle: string): boolean {
+  if (!haystack) return false
+  return normalize(haystack).includes(normalize(needle))
+}
+
+function tipoMatches(tipoDoc: string, query: string): boolean {
+  // Try to match just the number (e.g. "303" matches "Modelo 303")
+  const numMatch = query.match(/\d{3}/)
+  if (numMatch) return normalize(tipoDoc).includes(numMatch[0])
+  return contains(tipoDoc, query)
+}
+
+function filter(docs: Documento[], intent: SearchIntent, strict: boolean): Documento[] {
+  return docs
+    .filter((doc) => {
+      if (intent.cliente_nif) {
+        if (!doc.cliente_nif) return false
+        if (normalize(doc.cliente_nif) !== normalize(intent.cliente_nif)) return false
+      }
+      if (intent.cliente && !contains(doc.cliente ?? '', intent.cliente)) return false
+      if (intent.tipo_documento && !tipoMatches(doc.tipo_documento, intent.tipo_documento)) return false
+      if (strict && intent.ejercicio_fiscal && doc.ejercicio_fiscal !== intent.ejercicio_fiscal) return false
+      return true
+    })
+    .sort(byDateDesc)
+    .slice(0, 10)
+}
+
+function keywordSearch(docs: Documento[], keywords: string[]): Documento[] {
+  const terms = keywords.slice(0, 3).map(normalize)
+  return docs
+    .filter((doc) => {
+      const haystack = [
+        doc.cliente,
+        doc.tipo_documento,
+        doc.nombre_archivo,
+        doc.descripcion,
+        doc.carpeta_origen,
+        ...(doc.etiquetas ?? []),
+      ]
+        .filter(Boolean)
+        .map(normalize)
+        .join(' ')
+      return terms.some((t) => haystack.includes(t))
+    })
+    .sort(byDateDesc)
+    .slice(0, 10)
+}
+
+function byDateDesc(a: Documento, b: Documento): number {
+  if (!a.fecha_documento && !b.fecha_documento) return 0
+  if (!a.fecha_documento) return 1
+  if (!b.fecha_documento) return -1
+  return b.fecha_documento.localeCompare(a.fecha_documento)
 }
