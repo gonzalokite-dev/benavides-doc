@@ -184,11 +184,8 @@ async function processFile(
   const ext = path.extname(fileName).toLowerCase()
   const relativePath = path.relative(rootPath, filePath).replace(/\\/g, '/')
 
-  // Extract text from PDF
-  let pdfText = ''
-  if (ext === '.pdf') {
-    pdfText = await extractPdfText(filePath)
-  }
+  // PDF text extraction disabled — uses filename only to avoid cloud downloads
+  const pdfText = ''
 
   const tipo = inferTipo(fileName, relativePath, pdfText)
   const ejercicioFromName = extractEjercicio(fileName)
