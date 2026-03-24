@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { extractSearchIntent, generateSearchResponse, generateClienteResponse } from '@/lib/claude'
 import { searchDocuments } from '@/lib/search'
-import { searchClienteByQuery, getExpedientesByClienteId } from '@/lib/airtable'
+import { searchClienteByQuery, getExpedientesByClienteId, searchExpedientes } from '@/lib/airtable'
 import { verifyToken } from '@/lib/auth'
 import fs from 'fs'
 import path from 'path'
@@ -43,11 +43,48 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ type: 'text', message: intent.mensaje, documents: [] })
     }
 
-    // Step 3: Consulta de cliente (CRM only)
+    // Step 3: Búsqueda de expedientes (Airtable EXPEDIENTES table)
+    if (intent.tipo === 'busqueda_expedientes') {
+      const expedientes = await searchExpedientes({
+        cliente: intent.cliente,
+        estado: intent.estado,
+        tipoServicio: intent.tipo_servicio,
+        vencidos: intent.vencidos,
+        keyword: intent.keyword,
+      }).catch(() => [])
+
+      // Also fetch client card if client specified
+      const cliente = intent.cliente
+        ? await searchClienteByQuery(intent.cliente).catch(() => null)
+        : null
+
+      const count = expedientes.length
+      let responseText = ''
+      if (count === 0) {
+        responseText = `No encontré expedientes${intent.cliente ? ` de "${intent.cliente}"` : ''}${intent.estado ? ` con estado "${intent.estado}"` : ''}. Verifica los filtros o prueba con otros términos.`
+      } else {
+        const filtro = [
+          intent.cliente ? `de ${intent.cliente}` : '',
+          intent.estado ? `en estado "${intent.estado}"` : '',
+          intent.tipo_servicio ? `de tipo "${intent.tipo_servicio}"` : '',
+          intent.vencidos ? 'vencidos' : '',
+        ].filter(Boolean).join(', ')
+        responseText = `He encontrado ${count} expediente${count !== 1 ? 's' : ''}${filtro ? ` ${filtro}` : ''}.`
+      }
+
+      return NextResponse.json({
+        type: 'expedientes',
+        message: responseText,
+        documents: [],
+        cliente,
+        expedientes,
+        intent: { cliente: intent.cliente, tipo_documento: intent.tipo_servicio, ejercicio_fiscal: null },
+      })
+    }
+
+    // Step 4: Consulta de cliente (CRM only)
     if (intent.tipo === 'consulta_cliente') {
-      const [cliente, ] = await Promise.all([
-        searchClienteByQuery(intent.cliente).catch(() => null),
-      ])
+      const cliente = await searchClienteByQuery(intent.cliente).catch(() => null)
       const expedientes = cliente
         ? await getExpedientesByClienteId(cliente.id).catch(() => [])
         : []

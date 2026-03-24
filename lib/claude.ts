@@ -19,35 +19,49 @@ export type ConsultaCliente = {
   pregunta: string
 }
 
+export type BusquedaExpedientes = {
+  tipo: 'busqueda_expedientes'
+  cliente: string | null
+  estado: string | null        // "En curso" | "Pendiente" | "Completado" | "Cancelado"
+  tipo_servicio: string | null
+  vencidos: boolean
+  keyword: string | null
+}
+
 export type NonDocumental = {
   tipo: 'no_documental'
   mensaje: string
 }
 
-export type ClaudeIntent = SearchIntent | ConsultaCliente | NonDocumental
+export type ClaudeIntent = SearchIntent | ConsultaCliente | BusquedaExpedientes | NonDocumental
 
 const EXTRACT_PROMPT = `Eres un extractor de datos para Argos, el asistente de Benavides Asociados.
 Argos tiene acceso a documentos de SharePoint Y a la base de datos CRM de clientes (Airtable).
 
 Recibirás un mensaje del equipo. SIEMPRE responde con JSON puro, sin texto adicional.
 
-HAY 3 TIPOS DE RESPUESTA:
+HAY 4 TIPOS DE RESPUESTA:
 
-1. BÚSQUEDA DE DOCUMENTOS — cuando piden archivos, contratos, modelos, escrituras, etc.
+1. BÚSQUEDA DE DOCUMENTOS — cuando piden archivos, contratos, modelos, escrituras, PDFs, etc.
 {"tipo":"busqueda","cliente":"nombre TAL COMO LO ESCRIBE EL USUARIO o null","cliente_nif":"NIF/NIE/CIF o null","tipo_documento":"tipo normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["termino1"]}
 
-2. CONSULTA DE CLIENTE — cuando preguntan por datos del CRM: servicios contratados, cuota, asesor, expedientes, contacto, estado comercial, información general del cliente.
-Ejemplos: "¿qué servicios tiene X?", "info de X", "ficha de X", "¿cuál es la cuota de X?", "expedientes de X", "datos de contacto de X", "¿quién lleva a X?"
+2. BÚSQUEDA DE EXPEDIENTES — cuando preguntan por expedientes de trabajo: abiertos, vencidos, pendientes, en curso, de un cliente, de un tipo de servicio.
+Ejemplos: "expedientes pendientes de García", "expedientes vencidos", "expedientes de renta en curso", "¿qué expedientes tiene abiertos X?"
+Estados válidos: "En curso", "Pendiente", "Completado", "Cancelado"
+{"tipo":"busqueda_expedientes","cliente":"nombre o null","estado":"En curso|Pendiente|Completado|Cancelado|null","tipo_servicio":"Renta|IVA|Sociedades|etc o null","vencidos":false,"keyword":"término libre o null"}
+
+3. CONSULTA DE CLIENTE — cuando preguntan por datos del CRM de un cliente concreto: servicios, cuota, asesor, contacto, estado comercial.
+Ejemplos: "¿qué servicios tiene X?", "info de X", "ficha de X", "¿cuál es la cuota de X?", "¿quién lleva a X?"
 {"tipo":"consulta_cliente","cliente":"nombre del cliente","pregunta":"resumen breve de la pregunta"}
 
-3. NO DOCUMENTAL — solo para saludos o preguntas sin relación con documentos ni clientes.
-{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos o información de clientes."}
+4. NO DOCUMENTAL — solo para saludos o preguntas sin relación con documentos, expedientes ni clientes.
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos, expedientes o información de clientes."}
 
 REGLAS:
-- Si piden documentos → "busqueda"
-- Si preguntan por datos del cliente (no archivos) → "consulta_cliente"
-- Si piden "todo de X" o "expediente de X" → "busqueda" (incluye documentos)
-- IMPORTANTE: en "busqueda", el cliente es SIEMPRE el término exacto que escribió el usuario. Si dice "afama" → "afama". Si dice "garcia" → "garcia".
+- Si piden archivos/PDFs/contratos → "busqueda"
+- Si preguntan por expedientes de trabajo → "busqueda_expedientes"
+- Si preguntan por datos del cliente (no expedientes ni archivos) → "consulta_cliente"
+- IMPORTANTE: en "busqueda", el cliente es SIEMPRE el término exacto que escribió el usuario.
 
 Formato sin documentos:
 {"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos o información de clientes."}

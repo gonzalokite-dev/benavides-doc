@@ -26,6 +26,9 @@ export type AirtableExpediente = {
   asesor: string | null
   fechaVencimiento: string | null
   honorarios: number | null
+  diasVencidos: number | null
+  notas: string | null
+  facturado: boolean
 }
 
 // ─── HTTP ──────────────────────────────────────────────────────────────────────
@@ -78,6 +81,9 @@ function parseExpediente(record: Record<string, unknown>): AirtableExpediente {
     asesor: (f['Asesor Asignado'] as { name?: string } | null)?.name ?? null,
     fechaVencimiento: (f['Fecha vencimiento'] as string) ?? null,
     honorarios: (f['Honorarios'] as number) ?? null,
+    diasVencidos: (f['Días vencidos'] as number) ?? null,
+    notas: (f['Notas'] as string) ?? null,
+    facturado: (f['Facturado'] as boolean) ?? false,
   }
 }
 
@@ -92,6 +98,7 @@ const CLIENTE_FIELDS = [
 const EXPEDIENTE_FIELDS = [
   'Identificador', 'Nombre del expediente', 'Tipo de servicio',
   'Estado', 'Asesor Asignado', 'Fecha vencimiento', 'Honorarios',
+  'Días vencidos', 'Notas', 'Facturado',
 ]
 
 function buildFieldsParam(fields: string[]): string {
@@ -148,6 +155,62 @@ export async function getExpedientesByClienteId(clienteId: string): Promise<Airt
   const formula = `FIND("${clienteId}", ARRAYJOIN(Cliente, ","))`
   try {
     const url = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_EXPEDIENTES}?filterByFormula=${encodeURIComponent(formula)}&${buildFieldsParam(EXPEDIENTE_FIELDS)}&sort%5B0%5D%5Bfield%5D=Fecha%20vencimiento&sort%5B0%5D%5Bdirection%5D=desc`
+    const data = await atFetch(url)
+    const records = data.records as Record<string, unknown>[]
+    return (records ?? []).map(parseExpediente)
+  } catch {
+    return []
+  }
+}
+
+export type SearchExpedientesParams = {
+  cliente?: string | null        // client name to look up
+  clienteId?: string | null      // direct Airtable record ID
+  estado?: string | null         // "En curso", "Pendiente", "Completado", "Cancelado"
+  tipoServicio?: string | null   // e.g. "Renta", "IVA"
+  vencidos?: boolean             // only overdue (diasVencidos > 0)
+  keyword?: string | null        // free text search in name/notes
+}
+
+export async function searchExpedientes(params: SearchExpedientesParams): Promise<AirtableExpediente[]> {
+  const formulas: string[] = []
+
+  // If client name given, resolve to ID first
+  let clienteId = params.clienteId ?? null
+  if (!clienteId && params.cliente) {
+    const cliente = await searchClienteByQuery(params.cliente).catch(() => null)
+    if (cliente) clienteId = cliente.id
+  }
+
+  if (clienteId) {
+    formulas.push(`FIND("${clienteId}", ARRAYJOIN(Cliente, ","))`)
+  }
+
+  if (params.estado) {
+    formulas.push(`{Estado}="${params.estado}"`)
+  }
+
+  if (params.tipoServicio) {
+    formulas.push(`FIND(LOWER("${params.tipoServicio.toLowerCase()}"), LOWER(ARRAYJOIN({Tipo de servicio}, ",")))`)
+  }
+
+  if (params.vencidos) {
+    formulas.push(`{Días vencidos}>0`)
+  }
+
+  if (params.keyword) {
+    const kw = params.keyword.toLowerCase().replace(/["']/g, '')
+    formulas.push(`OR(SEARCH(LOWER("${kw}"), LOWER({Nombre del expediente})), SEARCH(LOWER("${kw}"), LOWER({Notas})))`)
+  }
+
+  const formula = formulas.length === 0
+    ? 'TRUE()'
+    : formulas.length === 1
+      ? formulas[0]
+      : `AND(${formulas.join(',')})`
+
+  try {
+    const url = `https://api.airtable.com/v0/${BASE_ID}/${TABLE_EXPEDIENTES}?filterByFormula=${encodeURIComponent(formula)}&${buildFieldsParam(EXPEDIENTE_FIELDS)}&sort%5B0%5D%5Bfield%5D=Fecha%20vencimiento&sort%5B0%5D%5Bdirection%5D=asc&maxRecords=50`
     const data = await atFetch(url)
     const records = data.records as Record<string, unknown>[]
     return (records ?? []).map(parseExpediente)

@@ -17,7 +17,7 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   documents?: Documento[]
-  type?: 'text' | 'search' | 'cliente' | 'error' | 'welcome'
+  type?: 'text' | 'search' | 'cliente' | 'expedientes' | 'error' | 'welcome'
   intent?: SearchIntent
   cliente?: AirtableCliente
   expedientes?: AirtableExpediente[]
@@ -248,8 +248,10 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
 
   const isSearch = message.type === 'search'
   const isCliente = message.type === 'cliente'
+  const isExpedientes = message.type === 'expedientes'
   const hasDocs = message.documents && message.documents.length > 0
   const hasCliente = !!message.cliente
+  const hasExpedientes = !!(message.expedientes && message.expedientes.length > 0)
 
   return (
     <div className="flex justify-start">
@@ -265,20 +267,29 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
               <p className={`text-sm font-kumbh leading-relaxed ${message.type === 'error' ? 'text-red-600' : 'text-navy/90'}`}>
                 {message.content}
               </p>
-              {(isSearch || isCliente) && message.intent && <IntentBadges intent={message.intent} />}
+              {(isSearch || isCliente || isExpedientes) && message.intent && <IntentBadges intent={message.intent} />}
             </div>
           </div>
         </div>
 
-        {/* Client card (Airtable data) */}
-        {hasCliente && (
+        {/* Client card (Airtable data) — for busqueda/consulta_cliente, shows full card with expedientes */}
+        {hasCliente && !isExpedientes && (
           <ClientCard
             cliente={message.cliente!}
             expedientes={message.expedientes ?? []}
           />
         )}
 
-        {/* Expediente panel (when docs found) */}
+        {/* Expedientes result — when busqueda_expedientes is the primary intent */}
+        {isExpedientes && hasExpedientes && (
+          <ClientCard
+            cliente={message.cliente ?? { id: '', nombre: '', nif: null, email: null, telefono: null, tipo: null, ubicacion: null, estadoComercial: null, servicios: [], cuota: null, asesor: null, fechaAlta: null }}
+            expedientes={message.expedientes!}
+            expedientesOnly={!message.cliente}
+          />
+        )}
+
+        {/* Document panel */}
         {hasDocs && (
           <ExpedientePanel
             documents={message.documents!}
@@ -288,8 +299,8 @@ export default function ChatMessage({ message, onSearch }: ChatMessageProps) {
           />
         )}
 
-        {/* Feedback when no docs */}
-        {(isSearch || isCliente) && !hasDocs && (
+        {/* Feedback */}
+        {(isSearch || isCliente || isExpedientes) && !hasDocs && !hasExpedientes && !hasCliente && (
           <div className="pl-1"><FeedbackButtons messageId={message.id} /></div>
         )}
       </div>

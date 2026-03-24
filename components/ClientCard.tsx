@@ -14,6 +14,40 @@ const EXPEDIENTE_ESTADO_COLORS: Record<string, string> = {
   'Cancelado':  'bg-red-50 text-red-600',
 }
 
+function ExpedienteRow({ exp }: { exp: AirtableExpediente }) {
+  const isVencido = exp.diasVencidos !== null && exp.diasVencidos > 0
+  return (
+    <div className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-warm-50">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-navy/80 font-kumbh font-medium truncate">{exp.nombre || exp.identificador}</p>
+          {isVencido && (
+            <span className="flex-shrink-0 text-xs bg-red-50 text-red-600 border border-red-100 px-1.5 py-0.5 rounded-full font-kumbh font-medium">
+              +{exp.diasVencidos}d
+            </span>
+          )}
+        </div>
+        {exp.tipoServicio.length > 0 && (
+          <p className="text-xs text-warm-400 font-kumbh mt-0.5">{exp.tipoServicio.join(' · ')}</p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {exp.asesor && (
+          <span className="text-xs text-warm-400 font-kumbh hidden sm:block">{exp.asesor.split(' ')[0]}</span>
+        )}
+        {exp.fechaVencimiento && (
+          <span className="text-xs text-warm-400 font-kumbh">{formatDate(exp.fechaVencimiento)}</span>
+        )}
+        {exp.estado && (
+          <span className={`text-xs px-2 py-0.5 rounded-full font-kumbh font-medium ${EXPEDIENTE_ESTADO_COLORS[exp.estado] ?? 'bg-warm-100 text-warm-500'}`}>
+            {exp.estado}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function formatDate(d: string | null): string {
   if (!d) return ''
   return new Date(d).toLocaleDateString('es-ES', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -27,11 +61,30 @@ function formatCurrency(n: number | null): string {
 interface ClientCardProps {
   cliente: AirtableCliente
   expedientes: AirtableExpediente[]
+  expedientesOnly?: boolean  // show only expedientes list, no client header
 }
 
-export default function ClientCard({ cliente, expedientes }: ClientCardProps) {
+export default function ClientCard({ cliente, expedientes, expedientesOnly = false }: ClientCardProps) {
   const estadoClass = ESTADO_COLORS[cliente.estadoComercial ?? ''] ?? 'bg-warm-100 text-warm-500 border-warm-200'
   const openExpedientes = expedientes.filter(e => e.estado !== 'Completado' && e.estado !== 'Cancelado')
+
+  if (expedientesOnly) {
+    return (
+      <div className="bg-white border border-navy/10 rounded-xl overflow-hidden shadow-sm">
+        <div className="bg-navy/5 px-4 py-2.5 flex items-center justify-between">
+          <p className="text-xs font-semibold text-navy font-kumbh uppercase tracking-wide">Expedientes</p>
+          <span className="text-xs bg-gold/15 text-gold-700 border border-gold/20 px-2 py-0.5 rounded-full font-kumbh font-medium">
+            {expedientes.length}
+          </span>
+        </div>
+        <div className="divide-y divide-warm-100">
+          {expedientes.map(exp => (
+            <ExpedienteRow key={exp.id} exp={exp} />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="bg-white border border-navy/10 rounded-xl overflow-hidden shadow-sm">
@@ -119,8 +172,8 @@ export default function ClientCard({ cliente, expedientes }: ClientCardProps) {
 
       {/* Expedientes */}
       {expedientes.length > 0 && (
-        <div className="px-4 py-3">
-          <div className="flex items-center justify-between mb-2">
+        <div>
+          <div className="px-4 py-2 flex items-center justify-between border-t border-warm-100">
             <p className="text-xs text-warm-400 font-kumbh">
               Expedientes
               {openExpedientes.length > 0 && (
@@ -131,29 +184,12 @@ export default function ClientCard({ cliente, expedientes }: ClientCardProps) {
             </p>
             <span className="text-xs text-warm-300 font-kumbh">{expedientes.length} total</span>
           </div>
-          <div className="space-y-1.5">
+          <div className="divide-y divide-warm-100">
             {expedientes.slice(0, 5).map(exp => (
-              <div key={exp.id} className="flex items-center justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs text-navy/80 font-kumbh truncate">{exp.nombre || exp.identificador}</p>
-                  {exp.tipoServicio.length > 0 && (
-                    <p className="text-xs text-warm-400 font-kumbh truncate">{exp.tipoServicio.join(', ')}</p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  {exp.fechaVencimiento && (
-                    <span className="text-xs text-warm-400 font-kumbh">{formatDate(exp.fechaVencimiento)}</span>
-                  )}
-                  {exp.estado && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-kumbh font-medium ${EXPEDIENTE_ESTADO_COLORS[exp.estado] ?? 'bg-warm-100 text-warm-500'}`}>
-                      {exp.estado}
-                    </span>
-                  )}
-                </div>
-              </div>
+              <ExpedienteRow key={exp.id} exp={exp} />
             ))}
             {expedientes.length > 5 && (
-              <p className="text-xs text-warm-400 font-kumbh pt-1">+{expedientes.length - 5} más</p>
+              <p className="text-xs text-warm-400 font-kumbh px-4 py-2">+{expedientes.length - 5} más</p>
             )}
           </div>
         </div>
