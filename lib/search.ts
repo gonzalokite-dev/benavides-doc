@@ -68,8 +68,9 @@ function scoreDoc(doc: Documento, intent: SearchIntent): number {
 
 function clientScore(doc: Documento, queryCliente: string): number {
   if (!queryCliente) return 0
+  if (!doc.cliente) return 0
   const query = normalize(queryCliente)
-  const docCliente = normalize(doc.cliente ?? '')
+  const docCliente = normalize(doc.cliente)
 
   // Exact substring match (highest)
   if (docCliente.includes(query)) return 20
