@@ -75,7 +75,7 @@ function keywordSearch(docs: Documento[], keywords: string[]): Documento[] {
         doc.carpeta_origen,
         ...(doc.etiquetas ?? []),
       ]
-        .filter(Boolean)
+        .filter((s): s is string => s !== null && s !== undefined)
         .map(normalize)
         .join(' ')
       return terms.some((t) => haystack.includes(t))
