@@ -34,6 +34,7 @@ const INDEXABLE_EXTENSIONS = new Set([
 const IGNORED_ROOT_FOLDERS = new Set([
   'Branding', 'PPT', 'Tarifas', 'VACACIONES', 'Bilky',
   'Arrendamiento de local', 'Germán', 'Gestoría', 'Inmobiliaria',
+  'Asistente documental',
 ])
 
 const IGNORED_FILES = new Set(['desktop.ini', 'thumbs.db', '.ds_store'])
@@ -184,8 +185,7 @@ async function processFile(
   const ext = path.extname(fileName).toLowerCase()
   const relativePath = path.relative(rootPath, filePath).replace(/\\/g, '/')
 
-  // PDF text extraction disabled — uses filename only to avoid cloud downloads
-  const pdfText = ''
+  const pdfText = ext === '.pdf' ? await extractPdfText(filePath) : ''
 
   const tipo = inferTipo(fileName, relativePath, pdfText)
   const ejercicioFromName = extractEjercicio(fileName)

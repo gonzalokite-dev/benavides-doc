@@ -20,32 +20,63 @@ export type NonDocumental = {
 
 export type ClaudeIntent = SearchIntent | NonDocumental
 
-const EXTRACT_PROMPT = `Eres un extractor de datos para un buscador de documentos de asesoría fiscal.
+const EXTRACT_PROMPT = `Eres un extractor de datos para un buscador de documentos de asesoría fiscal en Benavides Asociados.
 
-Recibirás un mensaje del equipo de Benavides Asociados. SIEMPRE responde con JSON puro, sin texto adicional.
+Recibirás un mensaje del equipo. SIEMPRE responde con JSON puro, sin texto adicional.
 
 REGLA PRINCIPAL: Si el mensaje menciona cualquier cliente, modelo fiscal, documento o archivo → tipo "busqueda".
-Solo usa "no_documental" para saludos o preguntas sin relación con documentos (ej: "¿qué tiempo hace?").
+Si piden "todos" los documentos de un cliente → tipo_documento: null y cliente relleno.
+Solo usa "no_documental" para saludos o preguntas sin relación con documentos.
 
-Formato para búsqueda de documentos:
-{"tipo":"busqueda","cliente":"nombre exacto del cliente o null","cliente_nif":"NIF/NIE/CIF si se menciona o null","tipo_documento":"tipo de documento o null","ejercicio_fiscal":2024,"palabras_clave":["termino1","termino2"]}
+Formato búsqueda:
+{"tipo":"busqueda","cliente":"nombre del cliente TAL COMO LO ESCRIBE EL USUARIO (no expandas abreviaturas ni añadas razón social) o null","cliente_nif":"NIF/NIE/CIF o null","tipo_documento":"tipo normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["termino1","termino2"]}
 
-Formato para mensajes sin relación con documentos:
-{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos de clientes. Prueba con: 'modelo 303 de [cliente]' o 'contrato de [cliente]'."}
+IMPORTANTE sobre el cliente: usa SIEMPRE el término exacto que escribió el usuario. Si dice "afama" → "afama". Si dice "garcia" → "garcia". Si dice "Sa Fonda" → "Sa Fonda". NO pongas "AFAMA S.L." si el usuario solo escribió "afama".
 
-Modelos fiscales — traducciones:
-036, censal → "Modelo 036"
-303, iva trimestral → "Modelo 303"
-390, resumen iva → "Modelo 390"
-200, sociedades → "Modelo 200"
-111, retenciones → "Modelo 111"
-190, resumen retenciones → "Modelo 190"
-347, operaciones terceros → "Modelo 347"
-349, intracomunitarias → "Modelo 349"
-renta, irpf → "Declaración de la renta"
-sucesiones → "Impuesto de Sucesiones"
+Formato sin documentos:
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos de clientes."}
 
-En palabras_clave incluye el nombre del cliente, tipo de documento y año si se menciona.
+TIPOS DE DOCUMENTO — normaliza así:
+Modelos fiscales:
+  036, alta censal → "Modelo 036"
+  037 → "Modelo 037"
+  303, iva trimestral → "Modelo 303"
+  390, resumen iva anual → "Modelo 390"
+  200, impuesto sociedades, IS → "Modelo 200"
+  111, retenciones trabajadores → "Modelo 111"
+  190, resumen retenciones → "Modelo 190"
+  347, operaciones terceros → "Modelo 347"
+  349, intracomunitarias → "Modelo 349"
+  115, retenciones alquiler → "Modelo 115"
+  130, pagos fraccionados → "Modelo 130"
+  720, bienes exterior → "Modelo 720"
+  renta, irpf, declaración renta → "Declaración de la renta"
+  sucesiones, herencia → "Impuesto de Sucesiones"
+  plusvalia → "Plusvalía"
+  ibi → "IBI (recibo)"
+
+Documentos no fiscales:
+  contrato alquiler, arrendamiento → "Contrato de alquiler"
+  contrato compraventa → "Contrato de compraventa"
+  contrato → "Contrato"
+  escritura constitución → "Escritura de constitución"
+  escritura propiedad, escritura compraventa → "Escritura de propiedad"
+  escritura → "Escritura"
+  licencia actividad, apertura → "Licencia de actividad"
+  certificado residencia fiscal → "Certificado de residencia fiscal"
+  certificado digital → "Certificado digital"
+  certificado → "Certificado"
+  poder notarial → "Poder notarial"
+  nie, nif → "NIE / NIF documento"
+  nómina, nomina → "Nómina"
+  factura → "Factura"
+  vida laboral → "Vida laboral"
+
+Carpetas del sistema (úsalas en palabras_clave si el usuario las menciona):
+  "Clientes", "No Residentes", "Campaña de Renta", "IRPF", "Informes Fiscales", "Certificados digitales"
+
+En palabras_clave incluye: nombre del cliente, tipo de documento y año si se mencionan.
+Si el usuario pide "todo" o "todos los documentos" → tipo_documento: null, y pon el nombre del cliente en palabras_clave.
 Responde ÚNICAMENTE con el JSON. Cero texto adicional.`
 
 export async function extractSearchIntent(
@@ -90,16 +121,23 @@ export async function generateSearchResponse(
     return `He encontrado ${count} ${count === 1 ? 'resultado' : 'resultados'} de ${tipo}${cliente}. Aquí tienes ${count === 1 ? 'el archivo' : 'los archivos'} con el enlace de descarga directo:`
   }
 
-  // No results — ask Claude for helpful suggestions
-  const prompt = `El equipo de Benavides Asociados buscó: "${userMessage}"
-Cliente buscado: ${intent.cliente ?? 'no especificado'}
-Tipo de documento: ${intent.tipo_documento ?? 'no especificado'}
-No se encontraron documentos en la base de datos.
+  // No results — generate a clear, specific message
+  const clienteTexto = intent.cliente ? `"${intent.cliente}"` : null
+  const tipoTexto = intent.tipo_documento ?? null
+  const añoTexto = intent.ejercicio_fiscal ? `del ${intent.ejercicio_fiscal}` : ''
 
-Escribe exactamente 2 frases en español:
-1. Di que no encontraste el documento (menciona cliente y tipo si se dieron).
-2. Sugiere cómo reformular la búsqueda (prueba con nombre completo, otro año, etc).
-Sin markdown. Sin listas. Solo texto plano.`
+  let contexto = 'No se encontró ningún documento'
+  if (clienteTexto && tipoTexto) contexto = `No se encontró ${tipoTexto} ${añoTexto} para el cliente ${clienteTexto}`
+  else if (clienteTexto) contexto = `No se encontró ningún documento para el cliente ${clienteTexto}`
+  else if (tipoTexto) contexto = `No se encontró ningún ${tipoTexto} ${añoTexto}`
+
+  const prompt = `El equipo de Benavides Asociados buscó: "${userMessage}"
+${contexto}.
+
+Escribe un mensaje corto (2 frases máximo) en español que:
+1. Confirme que no hay resultados, siendo específico sobre qué se buscó.
+2. Sugiera qué hacer: probar con otro término, verificar si el cliente existe en el sistema, o contactar con el responsable del archivo.
+Sin markdown. Sin listas. Tono profesional y directo.`
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',

@@ -65,6 +65,7 @@ export default function ChatPage() {
           content: data.message,
           documents: data.documents as Documento[],
           type: data.type,
+          intent: data.intent,
         }
 
         setMessages((prev) => [...prev, assistantMsg])
@@ -94,7 +95,7 @@ export default function ChatPage() {
       <main className="flex-1 overflow-y-auto pt-14 pb-0 scrollbar-thin">
         <div className="max-w-chat mx-auto px-4 py-6 space-y-4">
           {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
+            <ChatMessage key={msg.id} message={msg} onSearch={handleSend} />
           ))}
 
           {isLoading && <TypingIndicator />}

@@ -2,6 +2,23 @@ import { NextRequest, NextResponse } from 'next/server'
 import { extractSearchIntent, generateSearchResponse } from '@/lib/claude'
 import { searchDocuments } from '@/lib/search'
 import { verifyToken } from '@/lib/auth'
+import fs from 'fs'
+import path from 'path'
+
+function logSearch(query: string, intent: Record<string, unknown>, resultCount: number) {
+  try {
+    const logPath = path.join(process.cwd(), 'data', 'search.log')
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      query,
+      cliente: intent.cliente ?? null,
+      tipo: intent.tipo_documento ?? null,
+      año: intent.ejercicio_fiscal ?? null,
+      resultados: resultCount,
+    }) + '\n'
+    fs.appendFileSync(logPath, line, 'utf-8')
+  } catch { /* non-blocking */ }
+}
 
 export async function POST(request: NextRequest) {
   // Verify session
@@ -32,6 +49,9 @@ export async function POST(request: NextRequest) {
 
     // Step 3: Search documents
     const documents = await searchDocuments(intent)
+
+    // Log search for tuning
+    logSearch(message, intent as Record<string, unknown>, documents.length)
 
     // Step 4: Generate natural response with Claude
     const responseText = await generateSearchResponse(message, documents, intent)
