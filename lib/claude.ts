@@ -20,64 +20,60 @@ export type NonDocumental = {
 
 export type ClaudeIntent = SearchIntent | NonDocumental
 
-const SYSTEM_PROMPT = `Eres el asistente documental de Benavides Asociados, una asesoría fiscal y legal en las Islas Baleares.
+const EXTRACT_PROMPT = `Eres un extractor de datos para un buscador de documentos de asesoría fiscal.
 
-Tu ÚNICA función es ayudar al equipo a encontrar documentos de clientes.
+Recibirás un mensaje del equipo de Benavides Asociados. SIEMPRE responde con JSON puro, sin texto adicional.
 
-Cuando recibas una pregunta, extrae la información relevante y responde SIEMPRE con un objeto JSON válido sin texto adicional ni bloques de código.
+REGLA PRINCIPAL: Si el mensaje menciona cualquier cliente, modelo fiscal, documento o archivo → tipo "busqueda".
+Solo usa "no_documental" para saludos o preguntas sin relación con documentos (ej: "¿qué tiempo hace?").
 
-Si la pregunta es sobre documentos, responde con este formato exacto:
-{"tipo":"busqueda","cliente":"nombre del cliente o null","cliente_nif":"NIF/NIE si se menciona o null","tipo_documento":"tipo de documento o null","ejercicio_fiscal":año_como_número_o_null,"palabras_clave":["array","de","términos"]}
+Formato para búsqueda de documentos:
+{"tipo":"busqueda","cliente":"nombre exacto del cliente o null","cliente_nif":"NIF/NIE/CIF si se menciona o null","tipo_documento":"tipo de documento o null","ejercicio_fiscal":2024,"palabras_clave":["termino1","termino2"]}
 
-Si la pregunta NO es sobre documentos o búsqueda de archivos, responde con:
-{"tipo":"no_documental","mensaje":"respuesta amable explicando que solo puedes ayudar con búsqueda de documentación de clientes"}
+Formato para mensajes sin relación con documentos:
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos de clientes. Prueba con: 'modelo 303 de [cliente]' o 'contrato de [cliente]'."}
 
-Interpreta los modelos fiscales españoles:
-- "el 303", "iva trimestral", "iva" → "Modelo 303"
-- "el 036" → "Modelo 036"
-- "el 037" → "Modelo 037"
-- "el 200", "sociedades", "IS" → "Modelo 200"
-- "la renta", "irpf", "declaración de la renta" → "Declaración de la renta"
-- "el 111", "retenciones" → "Modelo 111"
-- "el 190", "resumen retenciones" → "Modelo 190"
-- "el 390", "resumen anual iva" → "Modelo 390"
-- "el 347", "operaciones con terceros" → "Modelo 347"
-- "el 349", "intracomunitarias" → "Modelo 349"
-- "censal" → "Modelo 036"
-- "sucesiones" → "Impuesto de Sucesiones"
+Modelos fiscales — traducciones:
+036, censal → "Modelo 036"
+303, iva trimestral → "Modelo 303"
+390, resumen iva → "Modelo 390"
+200, sociedades → "Modelo 200"
+111, retenciones → "Modelo 111"
+190, resumen retenciones → "Modelo 190"
+347, operaciones terceros → "Modelo 347"
+349, intracomunitarias → "Modelo 349"
+renta, irpf → "Declaración de la renta"
+sucesiones → "Impuesto de Sucesiones"
 
-Sé flexible con nombres de clientes: "Vicusi", "inversiones vicusi", "Inversiones Vicusi SL" son el mismo cliente.
-Para palabras_clave incluye sinónimos y variaciones del término buscado.
-Responde SOLO con el JSON, sin explicaciones ni formato markdown.`
+En palabras_clave incluye el nombre del cliente, tipo de documento y año si se menciona.
+Responde ÚNICAMENTE con el JSON. Cero texto adicional.`
 
 export async function extractSearchIntent(
-  userMessage: string,
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>
+  userMessage: string
 ): Promise<ClaudeIntent> {
-  const messages = [
-    ...conversationHistory.slice(-6).map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: m.content,
-    })),
-    { role: 'user' as const, content: userMessage },
-  ]
-
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 512,
-    system: SYSTEM_PROMPT,
-    messages,
+    max_tokens: 256,
+    system: EXTRACT_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
   })
 
-  const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '{}'
+  const text = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
+
+  // Strip markdown code blocks if Claude added them
+  const clean = text.replace(/^```json?\s*/i, '').replace(/\s*```$/, '').trim()
 
   try {
-    return JSON.parse(text) as ClaudeIntent
+    return JSON.parse(clean) as ClaudeIntent
   } catch {
-    // If JSON parsing fails, treat as non-documental
+    // If JSON fails, default to search with the raw message as keyword
     return {
-      tipo: 'no_documental',
-      mensaje: 'Lo siento, ha ocurrido un error procesando tu consulta. Por favor, inténtalo de nuevo.',
+      tipo: 'busqueda',
+      cliente: null,
+      cliente_nif: null,
+      tipo_documento: null,
+      ejercicio_fiscal: null,
+      palabras_clave: userMessage.split(' ').filter((w) => w.length > 2),
     }
   }
 }
@@ -87,30 +83,32 @@ export async function generateSearchResponse(
   documents: Array<Record<string, unknown>>,
   intent: SearchIntent
 ): Promise<string> {
-  const docsContext =
-    documents.length > 0
-      ? `Documentos encontrados (${documents.length}):\n${JSON.stringify(documents, null, 2)}`
-      : 'No se encontraron documentos.'
+  if (documents.length > 0) {
+    const count = documents.length
+    const cliente = intent.cliente ? ` de ${intent.cliente}` : ''
+    const tipo = intent.tipo_documento ? intent.tipo_documento : 'documentos'
+    return `He encontrado ${count} ${count === 1 ? 'resultado' : 'resultados'} de ${tipo}${cliente}. Aquí tienes ${count === 1 ? 'el archivo' : 'los archivos'} con el enlace de descarga directo:`
+  }
 
-  const prompt = `El usuario buscó: "${userMessage}"
-Intención detectada: cliente="${intent.cliente ?? 'no especificado'}", tipo="${intent.tipo_documento ?? 'no especificado'}", ejercicio=${intent.ejercicio_fiscal ?? 'no especificado'}
+  // No results — ask Claude for helpful suggestions
+  const prompt = `El equipo de Benavides Asociados buscó: "${userMessage}"
+Cliente buscado: ${intent.cliente ?? 'no especificado'}
+Tipo de documento: ${intent.tipo_documento ?? 'no especificado'}
+No se encontraron documentos en la base de datos.
 
-${docsContext}
-
-Redacta una respuesta breve y natural en español para el equipo de Benavides Asociados:
-- Si hay documentos: preséntalos de forma clara mencionando que aparecen las tarjetas con los enlaces de descarga.
-- Si no hay documentos: sé empático y sugiere 2-3 variaciones de búsqueda concretas que podrían funcionar.
-- Máximo 3 frases. Sin markdown ni listas.`
+Escribe exactamente 2 frases en español:
+1. Di que no encontraste el documento (menciona cliente y tipo si se dieron).
+2. Sugiere cómo reformular la búsqueda (prueba con nombre completo, otro año, etc).
+Sin markdown. Sin listas. Solo texto plano.`
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 256,
+    max_tokens: 150,
+    system: 'Eres el asistente documental de Benavides Asociados. Responde en español, de forma directa y concisa. Nunca expliques tus capacidades técnicas.',
     messages: [{ role: 'user', content: prompt }],
-    system:
-      'Eres el asistente documental de Benavides Asociados. Responde siempre en español, de forma concisa y profesional.',
   })
 
   return response.content[0].type === 'text'
     ? response.content[0].text.trim()
-    : 'He procesado tu búsqueda.'
+    : `No encontré documentos para "${userMessage}". Prueba con el nombre completo del cliente o un término diferente.`
 }

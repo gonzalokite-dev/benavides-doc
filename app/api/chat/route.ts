@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 1: Extract intent with Claude
-    const intent = await extractSearchIntent(message, history)
+    const intent = await extractSearchIntent(message)
 
     // Step 2: If not about documents, return the message directly
     if (intent.tipo === 'no_documental') {
