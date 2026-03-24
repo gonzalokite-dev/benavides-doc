@@ -14,11 +14,13 @@
     "@anthropic-ai/sdk": "^0.36.3",
     "jose": "^5.9.6",
     "next": "^14.2.21",
+    "pdf-parse": "^2.4.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "autoprefixer": "^10.4.20",
