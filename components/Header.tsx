@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 
 export default function Header() {
@@ -14,18 +15,27 @@ export default function Header() {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-navy shadow-md">
       <div className="max-w-chat mx-auto px-4 h-14 flex items-center justify-between">
-        {/* Logo + name */}
+
+        {/* Logo + nombre producto */}
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gold rounded-full flex items-center justify-center flex-shrink-0">
-            <span className="text-navy text-sm font-lora font-bold">B</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-white font-lora font-semibold text-lg leading-none">
-              BenavidesDoc
-            </span>
-            <span className="text-gold text-xs font-kumbh opacity-80 hidden sm:inline">
-              Benavides Asociados
-            </span>
+          <Image
+            src="/logo-benavides.png"
+            alt="Benavides Asociados"
+            width={120}
+            height={32}
+            className="brightness-0 invert opacity-90"
+            priority
+          />
+          <div className="flex items-center gap-2">
+            <div className="w-px h-5 bg-white/20" />
+            <div>
+              <span className="text-white font-lora font-semibold text-base leading-none tracking-wide">
+                Argos
+              </span>
+              <span className="block text-gold/70 text-[10px] font-kumbh leading-none mt-0.5 hidden sm:block">
+                Gestor documental inteligente
+              </span>
+            </div>
           </div>
         </div>
 
@@ -50,6 +60,7 @@ export default function Header() {
           </svg>
           <span className="hidden sm:inline">Cerrar sesión</span>
         </button>
+
       </div>
     </header>
   )

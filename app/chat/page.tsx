@@ -10,7 +10,7 @@ const WELCOME_MESSAGE: Message = {
   id: 'welcome',
   role: 'assistant',
   content:
-    'Hola, soy el asistente documental de Benavides. Pregúntame por cualquier documento de clientes: contratos, modelos fiscales, escrituras... ¿Qué necesitas?',
+    'Hola, soy Argos, el gestor documental inteligente de Benavides Asociados. Tengo acceso a toda la documentación de clientes en SharePoint: contratos, modelos fiscales, escrituras, certificados y más. Pregúntame por cualquier documento y te lo localizo al instante. ¿Qué necesitas?',
   type: 'welcome',
 }
 
@@ -109,7 +109,7 @@ export default function ChatPage() {
 
       {/* Footer */}
       <div className="text-center text-xs text-warm-400 py-1.5 bg-white/50 font-kumbh border-t border-warm-200">
-        BenavidesDoc v1.0 — Solo para uso interno
+        Argos v1.0 · Benavides Asociados — Solo para uso interno
       </div>
     </div>
   )

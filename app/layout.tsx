@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'BenavidesDoc — Gestor documental inteligente',
-  description: 'Buscador de documentación de clientes de Benavides Asociados',
+  title: 'Argos — Gestor documental · Benavides Asociados',
+  description: 'Argos: el gestor documental inteligente de Benavides Asociados',
   robots: 'noindex, nofollow',
 }
 

@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import { useState, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 
@@ -38,15 +39,25 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-warm-100 flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
-        {/* Logo placeholder */}
+
+        {/* Branding */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-20 h-20 bg-navy rounded-full flex items-center justify-center mb-4 shadow-lg">
-            <span className="text-gold text-2xl font-lora font-bold">B</span>
+          <Image
+            src="/logo-benavides.png"
+            alt="Benavides Asociados"
+            width={180}
+            height={48}
+            className="mb-6"
+            priority
+          />
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-px h-5 bg-navy/20" />
+            <h1 className="text-2xl font-lora font-bold text-navy tracking-tight">
+              Argos
+            </h1>
+            <div className="w-px h-5 bg-navy/20" />
           </div>
-          <h1 className="text-3xl font-lora font-bold text-navy tracking-tight">
-            BenavidesDoc
-          </h1>
-          <p className="text-warm-500 text-sm mt-1 font-kumbh">
+          <p className="text-warm-500 text-sm font-kumbh text-center">
             Gestor documental inteligente
           </p>
         </div>
@@ -93,11 +104,8 @@ export default function LoginPage() {
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
                     <circle
                       className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
+                      cx="12" cy="12" r="10"
+                      stroke="currentColor" strokeWidth="4"
                     />
                     <path
                       className="opacity-75"
