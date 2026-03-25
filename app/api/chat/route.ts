@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { extractSearchIntent, generateSearchResponse, generateClienteResponse } from '@/lib/claude'
+import {
+  extractSearchIntent,
+  generateAssistantResponse,
+  generateClienteResponse,
+  type HistoryMessage,
+} from '@/lib/claude'
 import { searchDocuments } from '@/lib/search'
 import { searchClienteByQuery, getExpedientesByClienteId, searchExpedientes } from '@/lib/airtable'
 import { verifyToken } from '@/lib/auth'
@@ -29,48 +34,40 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    const { message } = body
+    const { message, history = [] } = body as { message: string; history: HistoryMessage[] }
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json({ error: 'Mensaje requerido' }, { status: 400 })
     }
 
-    // Step 1: Extract intent
-    const intent = await extractSearchIntent(message)
+    // ── 1. Extract intent (with conversation history for B) ──────────────────
+    const intent = await extractSearchIntent(message, history)
 
-    // Step 2: No documental
     if (intent.tipo === 'no_documental') {
       return NextResponse.json({ type: 'text', message: intent.mensaje, documents: [] })
     }
 
-    // Step 3: Búsqueda de expedientes (Airtable EXPEDIENTES table)
+    // ── 2. Búsqueda de expedientes ────────────────────────────────────────────
     if (intent.tipo === 'busqueda_expedientes') {
-      const expedientes = await searchExpedientes({
-        cliente: intent.cliente,
-        estado: intent.estado,
-        tipoServicio: intent.tipo_servicio,
-        vencidos: intent.vencidos,
-        keyword: intent.keyword,
-      }).catch(() => [])
+      const [expedientes, cliente] = await Promise.all([
+        searchExpedientes({
+          cliente: intent.cliente,
+          estado: intent.estado,
+          tipoServicio: intent.tipo_servicio,
+          vencidos: intent.vencidos,
+          keyword: intent.keyword,
+        }).catch(() => []),
+        intent.cliente ? searchClienteByQuery(intent.cliente).catch(() => null) : Promise.resolve(null),
+      ])
 
-      // Also fetch client card if client specified
-      const cliente = intent.cliente
-        ? await searchClienteByQuery(intent.cliente).catch(() => null)
-        : null
-
-      const count = expedientes.length
-      let responseText = ''
-      if (count === 0) {
-        responseText = `No encontré expedientes${intent.cliente ? ` de "${intent.cliente}"` : ''}${intent.estado ? ` con estado "${intent.estado}"` : ''}. Verifica los filtros o prueba con otros términos.`
-      } else {
-        const filtro = [
-          intent.cliente ? `de ${intent.cliente}` : '',
-          intent.estado ? `en estado "${intent.estado}"` : '',
-          intent.tipo_servicio ? `de tipo "${intent.tipo_servicio}"` : '',
-          intent.vencidos ? 'vencidos' : '',
-        ].filter(Boolean).join(', ')
-        responseText = `He encontrado ${count} expediente${count !== 1 ? 's' : ''}${filtro ? ` ${filtro}` : ''}.`
-      }
+      const responseText = await generateAssistantResponse({
+        userMessage: message,
+        documents: [],
+        cliente,
+        expedientes,
+        history,
+        intent,
+      })
 
       return NextResponse.json({
         type: 'expedientes',
@@ -82,7 +79,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 4: Consulta de cliente (CRM only)
+    // ── 3. Consulta de cliente ────────────────────────────────────────────────
     if (intent.tipo === 'consulta_cliente') {
       const cliente = await searchClienteByQuery(intent.cliente).catch(() => null)
       const expedientes = cliente
@@ -106,36 +103,38 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // Step 4: Búsqueda de documentos
-    // 4a. Look up client in Airtable in parallel with doc search
+    // ── 4. Búsqueda de documentos (A + C) ─────────────────────────────────────
+    // Look up Airtable in parallel with doc search
     const clienteQuery = intent.cliente ?? intent.cliente_nif ?? null
     const [clienteAirtable, documents] = await Promise.all([
       clienteQuery ? searchClienteByQuery(clienteQuery).catch(() => null) : Promise.resolve(null),
-      Promise.resolve(searchDocuments(
-        // If Airtable NIF not yet known, search with what we have
-        intent.cliente_nif
-          ? intent
-          : intent
-      )),
+      Promise.resolve(searchDocuments(intent)),
     ])
 
-    // 4b. If Airtable found a NIF and we didn't have one, redo search with exact NIF
+    // If Airtable has the exact NIF and doc search returned nothing, retry with NIF
     let finalDocs = documents
-    if (clienteAirtable?.nif && !intent.cliente_nif && intent.cliente) {
-      const enrichedIntent = { ...intent, cliente_nif: clienteAirtable.nif }
-      const docsWithNif = searchDocuments(enrichedIntent)
-      // Use NIF-based results if they return something, otherwise keep original
+    if (clienteAirtable?.nif && !intent.cliente_nif && documents.length === 0) {
+      const enriched = { ...intent, cliente_nif: clienteAirtable.nif }
+      const docsWithNif = searchDocuments(enriched)
       if (docsWithNif.length > 0) finalDocs = docsWithNif
     }
 
-    // 4c. Get expedientes if client found
+    // Get expedientes for context
     const expedientes = clienteAirtable
       ? await getExpedientesByClienteId(clienteAirtable.id).catch(() => [])
       : []
 
     logSearch(message, intent as Record<string, unknown>, finalDocs.length)
 
-    const responseText = await generateSearchResponse(message, finalDocs, intent)
+    // Generative response using document content + Airtable data + history (A + B + C)
+    const responseText = await generateAssistantResponse({
+      userMessage: message,
+      documents: finalDocs as Record<string, unknown>[] as Parameters<typeof generateAssistantResponse>[0]['documents'],
+      cliente: clienteAirtable,
+      expedientes,
+      history,
+      intent,
+    })
 
     return NextResponse.json({
       type: 'search',

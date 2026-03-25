@@ -1,8 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk'
+import type { AirtableCliente, AirtableExpediente } from './airtable'
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-})
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type HistoryMessage = { role: 'user' | 'assistant'; content: string }
 
 export type SearchIntent = {
   tipo: 'busqueda'
@@ -22,7 +25,7 @@ export type ConsultaCliente = {
 export type BusquedaExpedientes = {
   tipo: 'busqueda_expedientes'
   cliente: string | null
-  estado: string | null        // "En curso" | "Pendiente" | "Completado" | "Cancelado"
+  estado: string | null
   tipo_servicio: string | null
   vencidos: boolean
   keyword: string | null
@@ -35,99 +38,86 @@ export type NonDocumental = {
 
 export type ClaudeIntent = SearchIntent | ConsultaCliente | BusquedaExpedientes | NonDocumental
 
+// ─── System prompt ────────────────────────────────────────────────────────────
+
+const ARGOS_SYSTEM = `Eres Argos, el asistente inteligente de Benavides Asociados (asesoría fiscal en Baleares).
+Tienes acceso a:
+1. Más de 10.000 documentos de clientes en SharePoint (contratos, modelos fiscales, escrituras, certificados...)
+2. El CRM de clientes y expedientes en Airtable
+
+CÓMO RESPONDER:
+- Analiza los datos proporcionados y responde de forma directa, útil y profesional
+- Si hay documentos: menciona los más relevantes con detalles concretos (tipo, año, fecha)
+- Si tienes datos del CRM: úsalos para dar contexto (servicios, asesor, expedientes pendientes)
+- Puedes hacer análisis: contar documentos por año, detectar si falta algo, comparar periodos
+- Si no hay resultados: explica claramente y sugiere alternativas concretas
+- Máximo 3-4 frases. Sin markdown. Sin listas. Texto fluido y natural.
+- NUNCA inventes datos que no estén en los resultados proporcionados
+- Habla en primera persona como Argos`
+
+// ─── Intent extraction (con memoria conversacional) ───────────────────────────
+
 const EXTRACT_PROMPT = `Eres un extractor de datos para Argos, el asistente de Benavides Asociados.
 Argos tiene acceso a documentos de SharePoint Y a la base de datos CRM de clientes (Airtable).
 
-Recibirás un mensaje del equipo. SIEMPRE responde con JSON puro, sin texto adicional.
+Recibirás el historial de la conversación y el mensaje actual. SIEMPRE responde con JSON puro.
 
-HAY 4 TIPOS DE RESPUESTA:
+IMPORTANTE — MEMORIA: Si el mensaje actual es ambiguo ("el de 2023", "¿y los contratos?", "¿cuántos tiene?"),
+usa el historial para inferir a qué cliente o documento se refiere.
 
-1. BÚSQUEDA DE DOCUMENTOS — cuando piden archivos, contratos, modelos, escrituras, PDFs, etc.
-{"tipo":"busqueda","cliente":"nombre TAL COMO LO ESCRIBE EL USUARIO o null","cliente_nif":"NIF/NIE/CIF o null","tipo_documento":"tipo normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["termino1"]}
+HAY 4 TIPOS:
 
-2. BÚSQUEDA DE EXPEDIENTES — cuando preguntan por expedientes de trabajo: abiertos, vencidos, pendientes, en curso, de un cliente, de un tipo de servicio.
-Ejemplos: "expedientes pendientes de García", "expedientes vencidos", "expedientes de renta en curso", "¿qué expedientes tiene abiertos X?"
-Estados válidos: "En curso", "Pendiente", "Completado", "Cancelado"
-{"tipo":"busqueda_expedientes","cliente":"nombre o null","estado":"En curso|Pendiente|Completado|Cancelado|null","tipo_servicio":"Renta|IVA|Sociedades|etc o null","vencidos":false,"keyword":"término libre o null"}
+1. busqueda — archivos, contratos, modelos, escrituras, PDFs
+{"tipo":"busqueda","cliente":"nombre EXACTO del usuario o null","cliente_nif":"NIF o null","tipo_documento":"normalizado o null","ejercicio_fiscal":2024,"palabras_clave":["term"]}
 
-3. CONSULTA DE CLIENTE — cuando preguntan por datos del CRM de un cliente concreto: servicios, cuota, asesor, contacto, estado comercial.
-Ejemplos: "¿qué servicios tiene X?", "info de X", "ficha de X", "¿cuál es la cuota de X?", "¿quién lleva a X?"
-{"tipo":"consulta_cliente","cliente":"nombre del cliente","pregunta":"resumen breve de la pregunta"}
+2. busqueda_expedientes — expedientes de trabajo (abiertos, pendientes, vencidos, en curso)
+{"tipo":"busqueda_expedientes","cliente":"nombre o null","estado":"En curso|Pendiente|Completado|Cancelado|null","tipo_servicio":"Renta|IVA|etc o null","vencidos":false,"keyword":"term o null"}
 
-4. NO DOCUMENTAL — solo para saludos o preguntas sin relación con documentos, expedientes ni clientes.
-{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos, expedientes o información de clientes."}
+3. consulta_cliente — datos CRM de un cliente: servicios, cuota, asesor, contacto, estado
+{"tipo":"consulta_cliente","cliente":"nombre","pregunta":"resumen"}
 
-REGLAS:
-- Si piden archivos/PDFs/contratos → "busqueda"
-- Si preguntan por expedientes de trabajo → "busqueda_expedientes"
-- Si preguntan por datos del cliente (no expedientes ni archivos) → "consulta_cliente"
-- IMPORTANTE: en "busqueda", el cliente es SIEMPRE el término exacto que escribió el usuario.
+4. no_documental — saludos, preguntas ajenas
+{"tipo":"no_documental","mensaje":"Solo puedo ayudarte con documentos, expedientes o información de clientes."}
 
-Formato sin documentos:
-{"tipo":"no_documental","mensaje":"Solo puedo ayudarte a buscar documentos o información de clientes."}
+TIPOS DE DOCUMENTO normalizados:
+303/iva trimestral→"Modelo 303" | 390→"Modelo 390" | 036/alta censal→"Modelo 036" | 200/sociedades→"Modelo 200"
+111/retenciones→"Modelo 111" | 190→"Modelo 190" | 347→"Modelo 347" | 349→"Modelo 349"
+115/alquiler→"Modelo 115" | 130/pagos fraccionados→"Modelo 130" | 720→"Modelo 720"
+renta/irpf→"Declaración de la renta" | sucesiones→"Impuesto de Sucesiones" | plusvalia→"Plusvalía"
+contrato alquiler→"Contrato de alquiler" | escritura constitución→"Escritura de constitución"
+escritura propiedad→"Escritura de propiedad" | certificado digital→"Certificado digital"
+poder notarial→"Poder notarial" | nomina→"Nómina" | factura→"Factura" | vida laboral→"Vida laboral"
 
-TIPOS DE DOCUMENTO — normaliza así:
-Modelos fiscales:
-  036, alta censal → "Modelo 036"
-  037 → "Modelo 037"
-  303, iva trimestral → "Modelo 303"
-  390, resumen iva anual → "Modelo 390"
-  200, impuesto sociedades, IS → "Modelo 200"
-  111, retenciones trabajadores → "Modelo 111"
-  190, resumen retenciones → "Modelo 190"
-  347, operaciones terceros → "Modelo 347"
-  349, intracomunitarias → "Modelo 349"
-  115, retenciones alquiler → "Modelo 115"
-  130, pagos fraccionados → "Modelo 130"
-  720, bienes exterior → "Modelo 720"
-  renta, irpf, declaración renta → "Declaración de la renta"
-  sucesiones, herencia → "Impuesto de Sucesiones"
-  plusvalia → "Plusvalía"
-  ibi → "IBI (recibo)"
-
-Documentos no fiscales:
-  contrato alquiler, arrendamiento → "Contrato de alquiler"
-  contrato compraventa → "Contrato de compraventa"
-  contrato → "Contrato"
-  escritura constitución → "Escritura de constitución"
-  escritura propiedad, escritura compraventa → "Escritura de propiedad"
-  escritura → "Escritura"
-  licencia actividad, apertura → "Licencia de actividad"
-  certificado residencia fiscal → "Certificado de residencia fiscal"
-  certificado digital → "Certificado digital"
-  certificado → "Certificado"
-  poder notarial → "Poder notarial"
-  nie, nif → "NIE / NIF documento"
-  nómina, nomina → "Nómina"
-  factura → "Factura"
-  vida laboral → "Vida laboral"
-
-Carpetas del sistema (úsalas en palabras_clave si el usuario las menciona):
-  "Clientes", "No Residentes", "Campaña de Renta", "IRPF", "Informes Fiscales", "Certificados digitales"
-
-En palabras_clave incluye: nombre del cliente, tipo de documento y año si se mencionan.
-Si el usuario pide "todo" o "todos los documentos" → tipo_documento: null, y pon el nombre del cliente en palabras_clave.
-Responde ÚNICAMENTE con el JSON. Cero texto adicional.`
+Responde ÚNICAMENTE con el JSON.`
 
 export async function extractSearchIntent(
-  userMessage: string
+  userMessage: string,
+  history: HistoryMessage[] = []
 ): Promise<ClaudeIntent> {
+  // Build messages: last 3 user turns as context + current message
+  const contextLines = history
+    .filter((m) => m.role === 'user')
+    .slice(-3)
+    .map((m) => `Consulta anterior: "${m.content}"`)
+    .join('\n')
+
+  const fullMessage = contextLines
+    ? `${contextLines}\n\nConsulta actual: "${userMessage}"`
+    : userMessage
+
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 256,
     system: EXTRACT_PROMPT,
-    messages: [{ role: 'user', content: userMessage }],
+    messages: [{ role: 'user', content: fullMessage }],
   })
 
   const text = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
-
-  // Strip markdown code blocks if Claude added them
   const clean = text.replace(/^```json?\s*/i, '').replace(/\s*```$/, '').trim()
 
   try {
     return JSON.parse(clean) as ClaudeIntent
   } catch {
-    // If JSON fails, default to search with the raw message as keyword
     return {
       tipo: 'busqueda',
       cliente: null,
@@ -139,47 +129,111 @@ export async function extractSearchIntent(
   }
 }
 
-export async function generateSearchResponse(
-  userMessage: string,
-  documents: Array<Record<string, unknown>>,
-  intent: SearchIntent
-): Promise<string> {
-  if (documents.length > 0) {
-    const count = documents.length
-    const cliente = intent.cliente ? ` de ${intent.cliente}` : ''
-    const tipo = intent.tipo_documento ? intent.tipo_documento : 'documentos'
-    return `He encontrado ${count} ${count === 1 ? 'resultado' : 'resultados'} de ${tipo}${cliente}. Aquí tienes ${count === 1 ? 'el archivo' : 'los archivos'} con el enlace de descarga directo:`
+// ─── Generative response (A + C) ──────────────────────────────────────────────
+
+type DocContext = {
+  nombre_archivo: string
+  tipo_documento?: string
+  cliente?: string
+  ejercicio_fiscal?: number
+  fecha_documento?: string
+  descripcion?: string
+  carpeta_origen?: string
+}
+
+function formatDocsForContext(docs: DocContext[]): string {
+  if (docs.length === 0) return 'Sin resultados.'
+  return docs
+    .slice(0, 15)
+    .map((d, i) => {
+      const parts = [
+        `[${d.tipo_documento ?? 'Documento'}]`,
+        d.cliente ?? d.carpeta_origen ?? '',
+        d.ejercicio_fiscal ? `· ${d.ejercicio_fiscal}` : '',
+        d.fecha_documento ? `· ${d.fecha_documento}` : '',
+        d.descripcion ? `· "${d.descripcion.slice(0, 120)}"` : '',
+      ].filter(Boolean)
+      return `${i + 1}. ${d.nombre_archivo} — ${parts.join(' ')}`
+    })
+    .join('\n')
+}
+
+function formatClienteForContext(
+  cliente: AirtableCliente | null,
+  expedientes: AirtableExpediente[]
+): string {
+  if (!cliente) return ''
+
+  const lines = [
+    `CLIENTE CRM: ${cliente.nombre}${cliente.nif ? ` (${cliente.nif})` : ''}`,
+    cliente.estadoComercial ? `Estado: ${cliente.estadoComercial}` : '',
+    cliente.asesor ? `Asesor: ${cliente.asesor}` : '',
+    cliente.servicios.length ? `Servicios: ${cliente.servicios.join(', ')}` : '',
+    cliente.cuota ? `Cuota: ${cliente.cuota}€/mes` : '',
+    cliente.email ? `Email: ${cliente.email}` : '',
+    cliente.telefono ? `Tel: ${cliente.telefono}` : '',
+  ].filter(Boolean)
+
+  if (expedientes.length > 0) {
+    lines.push(`Expedientes (${expedientes.length}):`)
+    expedientes.slice(0, 5).forEach((e) => {
+      const venc = e.fechaVencimiento ? ` | vence ${e.fechaVencimiento}` : ''
+      const vencido = e.diasVencidos && e.diasVencidos > 0 ? ` ⚠️ +${e.diasVencidos}d vencido` : ''
+      lines.push(`  - ${e.nombre || e.identificador} [${e.estado ?? '?'}]${venc}${vencido}`)
+    })
   }
 
-  // No results — generate a clear, specific message
-  const clienteTexto = intent.cliente ? `"${intent.cliente}"` : null
-  const tipoTexto = intent.tipo_documento ?? null
-  const añoTexto = intent.ejercicio_fiscal ? `del ${intent.ejercicio_fiscal}` : ''
+  return lines.join('\n')
+}
 
-  let contexto = 'No se encontró ningún documento'
-  if (clienteTexto && tipoTexto) contexto = `No se encontró ${tipoTexto} ${añoTexto} para el cliente ${clienteTexto}`
-  else if (clienteTexto) contexto = `No se encontró ningún documento para el cliente ${clienteTexto}`
-  else if (tipoTexto) contexto = `No se encontró ningún ${tipoTexto} ${añoTexto}`
+export async function generateAssistantResponse(params: {
+  userMessage: string
+  documents: DocContext[]
+  cliente: AirtableCliente | null
+  expedientes: AirtableExpediente[]
+  history: HistoryMessage[]
+  intent: SearchIntent | ConsultaCliente | BusquedaExpedientes
+}): Promise<string> {
+  const { userMessage, documents, cliente, expedientes, history, intent } = params
 
-  const prompt = `El equipo de Benavides Asociados buscó: "${userMessage}"
-${contexto}.
+  const docsContext = formatDocsForContext(documents)
+  const clienteContext = formatClienteForContext(cliente, expedientes)
 
-Escribe un mensaje corto (2 frases máximo) en español que:
-1. Confirme que no hay resultados, siendo específico sobre qué se buscó.
-2. Sugiera qué hacer: probar con otro término, verificar si el cliente existe en el sistema, o contactar con el responsable del archivo.
-Sin markdown. Sin listas. Tono profesional y directo.`
+  const contextBlock = [
+    documents.length > 0 ? `DOCUMENTOS ENCONTRADOS (${documents.length} total, mostrando hasta 15):\n${docsContext}` : 'DOCUMENTOS: Sin resultados para esta búsqueda.',
+    clienteContext ? `\n${clienteContext}` : '',
+  ].filter(Boolean).join('\n')
+
+  // Simplified history for context (last 3 exchanges)
+  const historyMessages: Anthropic.MessageParam[] = history.slice(-6).map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, 300), // truncate long messages
+  }))
+
+  const userPrompt = `El equipo pregunta: "${userMessage}"
+
+${contextBlock}
+
+Genera una respuesta directa y útil basándote en estos datos.`
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 150,
-    system: 'Eres el asistente documental de Benavides Asociados. Responde en español, de forma directa y concisa. Nunca expliques tus capacidades técnicas.',
-    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 300,
+    system: ARGOS_SYSTEM,
+    messages: [
+      ...historyMessages,
+      { role: 'user', content: userPrompt },
+    ],
   })
 
   return response.content[0].type === 'text'
     ? response.content[0].text.trim()
-    : `No encontré documentos para "${userMessage}". Prueba con el nombre completo del cliente o un término diferente.`
+    : documents.length > 0
+      ? `He encontrado ${documents.length} documentos relacionados con tu búsqueda.`
+      : `No encontré resultados para "${userMessage}". Prueba con otro término o verifica el nombre del cliente.`
 }
+
+// ─── Cliente response (consulta CRM) ─────────────────────────────────────────
 
 export async function generateClienteResponse(
   pregunta: string,
@@ -191,20 +245,16 @@ export async function generateClienteResponse(
     return `No encontré a "${clienteNombre}" en la base de datos de clientes. Verifica el nombre o prueba con el NIF.`
   }
 
-  const resumen = JSON.stringify({ cliente: clienteData, expedientes: expedientesData }, null, 2)
-
-  const prompt = `El equipo pregunta: "${pregunta}"
-
-Datos del cliente en el CRM:
-${resumen}
-
-Responde en español, de forma directa y concisa (máximo 3 frases). Usa los datos disponibles. Sin markdown. Sin listas. Solo texto fluido.`
+  const contexto = JSON.stringify({ cliente: clienteData, expedientes: expedientesData }, null, 2)
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 200,
-    system: 'Eres Argos, el asistente de Benavides Asociados. Respondes preguntas sobre clientes usando datos del CRM. Sé directo y preciso.',
-    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 250,
+    system: ARGOS_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `El equipo pregunta: "${pregunta}"\n\nDATOS CRM:\n${contexto}\n\nResponde directamente usando estos datos.`,
+    }],
   })
 
   return response.content[0].type === 'text'
